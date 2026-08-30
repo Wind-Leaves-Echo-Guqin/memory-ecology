@@ -1,0 +1,8 @@
+# 密钥与个人数据（Phase 2 完整实现开源时的护栏，方法论阶段即立）
+.env
+*.lock
+memories/
+state.db
+*.db
+session-*/
+*.bak-*
