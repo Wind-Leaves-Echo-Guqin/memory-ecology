@@ -1,0 +1,10 @@
+# Memory Ecology 配置示例（复制为 config.yaml 后按需修改；缺省用默认值即可运行）
+# 数据目录（默认：跟随安装位置自动派生；多实例/测试可覆盖）
+# data_dir: /path/to/memories
+# 模型（默认 deepseek-v4-flash；任意 OpenAI 兼容端点）
+# model: deepseek-v4-flash
+# llm_base_url: https://api.deepseek.com/v1/chat/completions
+# 密钥：从环境变量 MEMORY_ECOLOGY_API_KEY 或 .env 读取（生产默认 .env）
+# 阈值（不配置则用代码内保守默认——单用户通常无需调整）
+# quota_ratio: 0.85
+# observe_days: 30

@@ -76,7 +76,7 @@
 ## Roadmap
 
 - [x] **第一阶段 — 方法论（本仓库）**：设计哲学、架构、决策记录、实战教训以开放文档形式公开。
-- [ ] **第二阶段 — 完整实现开源（计划中）**：完整实现目前与特定 agent 平台深度耦合（数据表结构、cron 格式、存储布局）。计划将其通用化——配置化路径、数据源抽象层、部署文档、干净房测试套件——然后发布完整可运行代码。暂无时间表；代码已在本机实战验证（多轮对抗式审查 + 4 套 fixture 测试），耦合解除后即发布。
+- [x] **第二阶段 — 完整实现开源（2026-09-01）**：完整可运行实现已入本仓库——`src/memory_ecology/`（9 个治理脚本 + `lib/` 公共模块：config/fs/llm）、零依赖干净房测试套件（`tests/`，mock LLM，任何机器可跑）、`config.example.yaml`，以及发布流水线（从生产代码生成开源树，个人标识自动剥离，`scripts/scan_sensitive.py` 由 pre-push hook 强制）。两个 Hermes 集成脚本（eco_extract/eco_health_alert）有意不入开源仓库——它们读取 Hermes 运行时结构，已文档化为集成层。**验收标准 = 装下来就能用**：`git clone → python -m unittest discover tests → 全绿`。
 
 ## 致谢与参考
 
