@@ -79,7 +79,7 @@ Full details: [`docs/philosophy.md`](docs/philosophy.md)
 ## Roadmap
 
 - [x] **Phase 1 — Methodology (this repository)**: design philosophy, architecture, decisions, and lessons as open documentation.
-- [ ] **Phase 2 — Full implementation open-sourcing (planned)**: the complete implementation is currently tightly coupled to a specific agent platform (schema, cron format, storage layout). We plan to generalize it — configuration-driven paths, a data-source abstraction layer, deployment docs, and a clean-room test suite — and publish the full runnable code. No ETA; the codebase is battle-tested locally (multi-round adversarial review, 4 fixture test suites) and will be released when the coupling is removed.
+- [x] **Phase 2 — Full implementation open-sourced (2026-09-01)**: the complete runnable implementation is now in this repository — `src/memory_ecology/` (9 governance scripts + `lib/` common modules: config / fs / llm), a zero-dependency clean-room test suite (`tests/`, mock LLM, runs anywhere), `config.example.yaml`, and a publishing pipeline that generates the open-source tree from the production codebase (personal identifiers stripped, `scripts/scan_sensitive.py` enforced by a pre-push hook). The two Hermes-integration scripts (`eco_extract`, `eco_health_alert`) intentionally remain out of the open repo — they read Hermes runtime structures and are documented as the integration layer. **Install-and-run is the acceptance bar**: `git clone → python -m unittest discover tests → green`.
 
 ## Acknowledgments & references
 

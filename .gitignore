@@ -6,3 +6,9 @@ state.db
 *.db
 session-*/
 *.bak-*
+__pycache__/
+*.pyc
+config.yaml
+memories/
+*.db
+.env
