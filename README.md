@@ -80,6 +80,7 @@ Full details: [`docs/philosophy.md`](docs/philosophy.md)
 
 - [x] **Phase 1 — Methodology (this repository)**: design philosophy, architecture, decisions, and lessons as open documentation.
 - [x] **Phase 2 — Full implementation open-sourced (2026-09-01)**: the complete runnable implementation is now in this repository — `src/memory_ecology/` (9 governance scripts + `lib/` common modules: config / fs / llm), a zero-dependency clean-room test suite (`tests/`, mock LLM, runs anywhere), `config.example.yaml`, and a publishing pipeline that generates the open-source tree from the production codebase (personal identifiers stripped, `scripts/scan_sensitive.py` enforced by a pre-push hook). The two Hermes-integration scripts (`eco_extract`, `eco_health_alert`) intentionally remain out of the open repo — they read Hermes runtime structures and are documented as the integration layer. **Install-and-run is the acceptance bar**: `git clone → python -m unittest discover tests → green`.
+- [x] **v2.1.0 (2026-09-03)**: core governance layer verified stable (zero functional drift); Hermes-integration evolution (experience notebook, error-context injection, historical backfill) tracked in `CHANGELOG.md` — this tree remains the governance-layer baseline. Versioning policy: open tree = core layer; integration layer stays local by design.
 
 ## Acknowledgments & references
 
