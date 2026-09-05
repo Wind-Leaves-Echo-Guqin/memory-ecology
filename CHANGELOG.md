@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.1.1 (2026-09-05)
+
+Bugfix + regression hardening (open-tree touch = one threshold constant in `eco_health_check.py`):
+
+- **Extraction robustness (5 defects fixed)**: greedy `[.*]` regex replaced with balanced-bracket extraction; `exit_code: true/false` no longer treated as error (bool is int subclass); JSON-array tool content parsed recursively; pytest title-style `FAILED tests/...` (no colon) detected; empty-context signal skip now logged.
+- **Memory threshold alignment**: health check 2200 → 2550 chars (matches quota management line; eliminates false positives in the 2200–2550 band).
+- **Pipeline safety**: backfill queue lock (O_EXCL + stale reclaim) guards against double-executor runs; rank aggregation folds same-episode entries (prevents injecting the same event multiple times).
+- **Merge-candidate list generator** (read-only): near-duplicate pairs (n-gram similarity ≥ 0.75) from production entries + candidate pool, with keep/absorb suggestion — human check required before any merge.
+- **Regression hardening**: persistent gate test suite (write_gate / eco_quota / distill_stage / eco_review) replacing ad-hoc validation scripts; all five extraction defects fixed as fixtures.
+
 ## v2.1.0 (2026-09-03)
 
 - **Core governance layer: zero functional change** — stable baseline since v2.0.0 (verified: all diffs vs production are line-ending and sanitization-only, e.g. generic topic lists and paths).
