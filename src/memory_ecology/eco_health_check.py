@@ -41,6 +41,7 @@ WORKFLOWS_DIR = Path.home() / ".memory-ecology" / "workflows"
 DESIGNS_DIR = Path.home() / ".memory-ecology" / "designs"
 DESKTOP = Path.home() / "Desktop"
 SCORE_HISTORY = DESIGNS_DIR / "eco_score_history.json"
+MEM_MAX_CHARS = 2550  # v2.1.1 ③ 口径对齐：管理线 2550（原 2200 为 v1 体检旧参，2200-2550 区间误报「超限」）
 
 # v0.8 合法状态组合矩阵（status \ fate）——未显式声明的默认 active/retained
 LEGAL_MATRIX = {
@@ -461,7 +462,7 @@ def build_report():
     mem_out, mem_kw, mem_dups = memory_check()
     backs = backup_census()
     jobs, (cron_errs, cron_oks) = cron_health()
-    mem_over = any(name == "MEMORY.md" and chars > 2200 for name, size, chars in mem_out)
+    mem_over = any(name == "MEMORY.md" and chars > MEM_MAX_CHARS for name, size, chars in mem_out)
     backup_flags = [b for b in backs if b.get("flag")]
     score, light, verdict, score_detail = health_score(skills, dups, dangling, ver_rate, missing,
                                                        cron_errs, mem_over, backup_flags)
@@ -620,7 +621,7 @@ def build_report():
     L.append("## 6. 记忆体检")
     L.append("")
     for name, size, chars in mem_out:
-        L.append(f"- {name}: {size} 字节 / {chars} 字符（设计上限 2200 字符，决策口径 = 字符）")
+        L.append(f"- {name}: {size} 字节 / {chars} 字符（设计上限 {MEM_MAX_CHARS} 字符，决策口径 = 字符）")
     if mem_kw:
         L.append("- ⚠️ 词频标注（口径：预设关键词白名单（config 可调） 双文件合计计数，≥2 次才报，仅**疑似**，需人工复核——同一行内词频≠重复条目）:")
         for kw, (cnt, label) in mem_kw.items():
