@@ -11,7 +11,7 @@
   "name": "memory-ecology",
   "description": "Agent memory lifecycle governance toolkit. Governs an AI agent's memories and skills as an ecosystem: extraction, write integration, consolidation/quota, persona distillation, expiry review, quality evaluation, skill breeding, and ecosystem search. Philosophy: evolution is the goal, management is the means; zero user maintenance; rule-driven automation with reversible fallbacks; physical deletion disabled at code level.",
   "url": "https://github.com/Wind-Leaves-Echo-Guqin/memory-ecology",
-  "version": "0.8.0",
+  "version": "2.1.1",
   "documentationUrl": "https://github.com/Wind-Leaves-Echo-Guqin/memory-ecology/blob/main/docs/architecture.md",
   "provider": {
     "organization": "Wind-Leaves-Echo-Guqin",
