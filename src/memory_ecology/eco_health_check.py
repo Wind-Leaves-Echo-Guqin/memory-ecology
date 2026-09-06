@@ -39,9 +39,9 @@ MEMORIES_DIR = HERMES_HOME / "memories"
 CRON_JOBS = HERMES_HOME / "cron" / "jobs.json"
 WORKFLOWS_DIR = Path.home() / ".memory-ecology" / "workflows"
 DESIGNS_DIR = Path.home() / ".memory-ecology" / "designs"
+MEM_MAX_CHARS = 2550  # v2.1.1 ③ 口径对齐：eco_quota 管理线 2550（原 2200 为 v1 体检旧参，2200-2550 区间误报「超限」）
 DESKTOP = Path.home() / "Desktop"
 SCORE_HISTORY = DESIGNS_DIR / "eco_score_history.json"
-MEM_MAX_CHARS = 2550  # v2.1.1 ③ 口径对齐：管理线 2550（原 2200 为 v1 体检旧参，2200-2550 区间误报「超限」）
 
 # v0.8 合法状态组合矩阵（status \ fate）——未显式声明的默认 active/retained
 LEGAL_MATRIX = {

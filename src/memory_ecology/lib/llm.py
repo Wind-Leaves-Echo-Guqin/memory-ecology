@@ -1,10 +1,12 @@
 """LLM 调用公共函数（memory-ecology lib）。
 
-complete() 纯函数：默认走 deepseek API（生产现行为：urllib + .env 密钥），
-client 可注入（测试用 fake）。不做类层次——13 脚本中真调 LLM 的仅 3-5 个，
-不值得客户端框架。周熔断逻辑留各脚本（成本护栏属业务配置）。
+complete() 纯函数：默认走 deepseek API，client 可注入（测试用 fake）。
+密钥解析顺序（Q32 修复 2026-09-06，与文档口径对齐）：
+  显式 api_key 参数 → 环境变量 MEMORY_ECOLOGY_API_KEY → 数据根 .env 的 DEEPSEEK_API_KEY
+不做类层次——13 脚本中真调 LLM 的仅 3-5 个，不值得客户端框架。周熔断逻辑留各脚本（成本护栏属业务配置）。
 """
 import json
+import os
 import urllib.request
 
 from . import config
@@ -22,7 +24,9 @@ def complete(prompt: str, *, client=None, model: str = DEFAULT_MODEL,
     client(prompt, model=..., max_tokens=..., temperature=...) -> str）。"""
     if client is not None:
         return client(prompt, model=model, max_tokens=max_tokens, temperature=temperature)
-    key = api_key or config.env_key("DEEPSEEK_API_KEY")
+    key = (api_key
+           or os.environ.get("MEMORY_ECOLOGY_API_KEY")
+           or config.env_key("DEEPSEEK_API_KEY"))
     body = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],

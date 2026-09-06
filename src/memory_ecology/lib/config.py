@@ -8,7 +8,10 @@ import os
 from pathlib import Path
 
 # scripts/lib/config.py → 三级上级 = hermes 根（生产）
-_HERMES = Path(__file__).resolve().parent.parent.parent
+# src/memory_ecology/lib/config.py（开源 src 布局）→ 三级上级 = src，再上一级 = 仓库根
+# （Q30 修复 2026-09-06：原派生在开源树落到 <repo>/src/，陌生用户首跑会在代码目录长数据）
+_P3 = Path(__file__).resolve().parent.parent.parent
+_HERMES = _P3.parent if _P3.name == "src" else _P3
 
 # 环境变量覆盖（测试/多实例用）
 _ENV_OVERRIDE = os.environ.get("MEMORY_ECOLOGY_ROOT")

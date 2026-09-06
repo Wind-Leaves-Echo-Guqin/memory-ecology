@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.2.0 (2026-09-06)
+
+Safe write-path hardening (the v2.2 first item) + evaluation gate lines:
+
+- **Safe write path**: new `lib/safeio.py` — entry-name whitelist + traversal guard, `detail`-entry frontmatter schema validation (type/status enums, ISO dates, non-negative counters), atomic writes with optional backups, JSONL append with size caps. Wired into every entry writer (`write_gate` ADD/UPDATE/supersede).
+- **Evaluation gate lines** (stage C of the versioning strategy): `eco_eval` adds two gate lines — **INJ** (injections over the 1500-char budget ≤ 5 / 30 days) and **GOLD** (pseudo-gold = memories actually used, top-5 replay relevance ≥ 60%; requires the experience-notebook retriever, reported as SKIP on pure-memory installs); `--gate` rule-only mode; INSUFFICIENT is reported honestly and never silently counted as PASS/FAIL.
+- **`scripts/scan_sensitive.py` removed from the repo**: the sanitizer's own blocklist enumerated private identifiers (a meta-leak — the censor's wordlist reveals what it protects). Sanitization now runs exclusively in the private publishing pipeline; the shipped tree is its verified output.
+- Dependency note: `lib/safeio.py` ships with the tree; `eco_eval` degrades gracefully when the optional experience-notebook retriever is absent.
+
 ## v2.1.1 (2026-09-05)
 
 Bugfix + regression hardening (open-tree touch = one threshold constant in `eco_health_check.py`):

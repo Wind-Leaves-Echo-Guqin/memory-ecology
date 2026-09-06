@@ -26,12 +26,23 @@ from pathlib import Path
 
 from lib.config import hermes_root
 from lib import llm as _llm
+from lib.fs import atomic_write
+try:
+    import eco_note_error_query as errq  # v2.2.0 GOLD 重放检索器（经验笔记本线提供）
+except ImportError:  # 纯记忆线（无经验笔记本）缺省——GOLD 判定线记 SKIP，不阻塞其余维度
+    errq = None
 
 HERMES = hermes_root()
 DETAIL_DIR = HERMES / "memories" / "detail"
 LOG_DIR = HERMES / "memories" / "gate_log"
 QUARANTINE_DIR = HERMES / "memories" / "quarantine"
 DB = HERMES / "eco.db"
+EXPERIENCES_DIR = HERMES / "experiences"
+
+INJ_BUDGET_CHARS = 1500   # v2.2.0 判定线①：单次注入文本预算（超限 = chars > 预算）
+INJ_MIN_EVENTS = 10       # 样本 < 此数记 INSUFFICIENT（不判 FAIL，诚实待数据）
+GOLD_MIN_EVENTS = 5       # 判定线②：可重放 gold < 此数记 INSUFFICIENT
+GOLD_TOP5_RATE = 0.60     # top5 相关率判定线
 
 MR_TOPICS = ["python", "data", "report", "model", "config", "script", "image", "test"]
 ABS_SAMPLE = 5  # 抽样判分条数
@@ -82,7 +93,17 @@ def main() -> int:
     ap.add_argument("--db", type=Path, default=DB)
     ap.add_argument("--logdir", type=Path, default=LOG_DIR)
     ap.add_argument("--topics", type=str, default=",".join(MR_TOPICS))
+    ap.add_argument("--gate", action="store_true",
+                    help="纯规则门禁模式：跳过 ABS 的 LLM 判分（可入 cron/回归）")
+    ap.add_argument("--experiences", type=Path, default=EXPERIENCES_DIR)
+    ap.add_argument("--inject-log", type=Path, default=None)  # R3：默认随 --experiences 派生
+    ap.add_argument("--gold", type=Path, default=None)        # R3：默认随 --experiences 派生
+    ap.add_argument("--inj-budget", type=int, default=INJ_BUDGET_CHARS)
     args = ap.parse_args()
+    if args.inject_log is None:
+        args.inject_log = args.experiences / ".injected.jsonl"
+    if args.gold is None:
+        args.gold = args.experiences / ".eval_gold.json"
 
     today = datetime.date.today().isoformat()
     report: list[str] = []
@@ -156,12 +177,17 @@ def main() -> int:
     scores["TR"] = ("PASS" if tr_ok else "FAIL", f"transaction_time {tt_cov:.0%} / valid_time {vt_cov:.0%}")
     report.append(f"TR 时间推理: {'✅' if tr_ok else '❌'} detail {n} 条, transaction_time 覆盖 {tt_cov:.0%}（需100%）")
 
-    # ---- ABS：安全弃答（LLM 判分，弱证据）----
-    l1_text = ""
-    for p in (HERMES / "memories" / "MEMORY.md", HERMES / "memories" / "USER.md"):
-        if p.exists():
-            l1_text += p.read_text(encoding="utf-8", errors="replace") + "\n"
-    entries = [e.strip() for e in re.split(r"§|\n", l1_text) if len(e.strip()) > 10]
+    # ---- ABS：安全弃答（LLM 判分，弱证据；--gate 纯规则模式跳过）----
+    if args.gate:
+        scores["ABS"] = ("SKIP", "--gate 纯规则模式，LLM 判分跳过")
+        report.append("ABS 安全弃答: ⏳ SKIP（--gate 纯规则模式）")
+        entries = []
+    else:
+        l1_text = ""
+        for p in (HERMES / "memories" / "MEMORY.md", HERMES / "memories" / "USER.md"):
+            if p.exists():
+                l1_text += p.read_text(encoding="utf-8", errors="replace") + "\n"
+        entries = [e.strip() for e in re.split(r"§|\n", l1_text) if len(e.strip()) > 10]
     suspicious = 0
     judged = 0
     if entries and not args.dry_run:
@@ -177,22 +203,83 @@ def main() -> int:
                 report.append(f"  ⚠️ 可疑条目: {e[:40]}（{res.get('reason','')[:40]}）")
     abs_rate = suspicious / judged if judged else 0.0
     abs_ok = judged >= 3 and abs_rate <= 0.30
-    scores["ABS"] = ("PASS" if abs_ok else "FAIL",
-                     f"{suspicious}/{judged} 可疑（≤30%）；样本不足视为未达标")
-    report.append(f"ABS 安全弃答: {'✅' if abs_ok else '❌'} {suspicious}/{judged} 可疑率 {abs_rate:.0%}"
-                  f"（需 ≥3 样本且 ≤30%，弱证据）")
+    if args.gate:
+        scores["ABS"] = ("SKIP", "--gate 纯规则模式")
+    else:
+        scores["ABS"] = ("PASS" if abs_ok else "FAIL",
+                         f"{suspicious}/{judged} 可疑（≤30%）；样本不足视为未达标")
+        report.append(f"ABS 安全弃答: {'✅' if abs_ok else '❌'} {suspicious}/{judged} 可疑率 {abs_rate:.0%}"
+                      f"（需 ≥3 样本且 ≤30%，弱证据）")
+
+    # ---- INJ：注入超限（v2.2.0 判定线①，门禁非调参）----
+    inj_events = _read_jsonl(args.inject_log)
+    oversized, measured = inj_over_budget(inj_events, days=30, budget=args.inj_budget)
+    if measured >= INJ_MIN_EVENTS:
+        inj_ok = oversized <= 5
+        inj_status = "PASS" if inj_ok else "FAIL"
+    else:
+        inj_status = "INSUFFICIENT"
+    scores["INJ"] = (inj_status, f"{oversized}/{measured} 超预算（>{args.inj_budget} 字符，需 ≤5 次/30天）")
+    report.append(f"INJ 注入超限: {'✅' if inj_status == 'PASS' else '⏳' if inj_status == 'INSUFFICIENT' else '❌'} "
+                  f"近 30 天 {oversized}/{measured} 次超 {args.inj_budget} 字符（需 ≤5；样本 <{INJ_MIN_EVENTS} 记 INSUFFICIENT）")
+
+    # ---- GOLD：伪 gold top5 相关率（v2.2.0 判定线②）----
+    gold: list = []
+    try:
+        gold = json.loads(args.gold.read_text(encoding="utf-8")).get("gold", [])
+    except Exception:
+        gold = []
+    replayable = [g for g in gold
+                  if g.get("error") and (args.experiences / f"{g.get('entry_id', '')}.md").exists()]
+    gold_hits = 0
+    replay_failed = 0
+    if errq is None:
+        gold_status = "SKIP"  # 纯记忆线：无经验笔记本检索器，GOLD 判定线不适用
+        gold_rate = 0.0
+    else:
+        try:
+            errq.eq.EXP_DIR = args.experiences  # rank 内部经 eco_note_query 读条目（旋钮在 eq 侧）
+            for g in replayable:
+                try:
+                    ids = [h["path"] for h in errq.rank(g["error"], top=5)]
+                    if not ids:
+                        replay_failed += 1  # R2：零关键词/空结果=重放失败，与检索 miss 区分
+                    elif g["entry_id"] in ids:
+                        gold_hits += 1
+                except Exception:
+                    replay_failed += 1
+                    continue
+        except Exception as ex:
+            report.append(f"GOLD 重放异常: {ex}")
+            replay_failed = len(replayable)
+        if len(replayable) >= GOLD_MIN_EVENTS and replay_failed > len(replayable) // 2:
+            gold_rate = 0.0
+            gold_status = "INSUFFICIENT"  # R2：重放失败过半=口径/基础设施问题，不误判检索质量
+        elif len(replayable) >= GOLD_MIN_EVENTS:
+            gold_rate = gold_hits / len(replayable)
+            gold_status = "PASS" if gold_rate >= GOLD_TOP5_RATE else "FAIL"
+        else:
+            gold_rate = 0.0
+            gold_status = "INSUFFICIENT"
+    scores["GOLD"] = (gold_status, f"top5 相关率 {gold_rate:.0%}（{gold_hits}/{len(replayable)}，需 ≥60%）")
+    _g = "✅" if gold_status == "PASS" else "❌" if gold_status == "FAIL" else "⏳"
+    _gn = ("不适用（纯记忆线）" if gold_status == "SKIP"
+           else f"{gold_hits}/{len(replayable)} = {gold_rate:.0%}（需 ≥60%；可重放 <{GOLD_MIN_EVENTS} 记 INSUFFICIENT）")
+    report.append(f"GOLD top5 相关率: {_g} {_gn}")
 
     # ---- 判定线汇总 ----
     fails = [k for k, (st, _) in scores.items() if st == "FAIL"]
+    pending = [k for k, (st, _) in scores.items() if st in ("INSUFFICIENT", "SKIP")]
     report.append("")
-    report.append(f"判定线汇总: {'✅ 全部达标' if not fails else '❌ 未达标: ' + ', '.join(fails)}")
+    report.append(f"判定线汇总: {'✅ 全部达标' if not fails else '❌ 未达标: ' + ', '.join(fails)}"
+                  + (f"；⏳ 数据未满（不计 FAIL）: {', '.join(pending)}" if pending else ""))
     report.append("（注：门禁非调参——只判定过/不过，不做提升曲线叙事）")
 
     print("\n".join(report))
     if not args.dry_run:
         out = args.logdir / f"eval-{today}.md"
         args.logdir.mkdir(parents=True, exist_ok=True)
-        out.write_text("# 记忆生态评测（LongMemEval 五维）\n\n" + "\n".join(report) + "\n", encoding="utf-8")
+        atomic_write(out, "# 记忆生态评测（LongMemEval 五维）\n\n" + "\n".join(report) + "\n")  # R15：原子写
         print(f"✅ 评测报告 → {out}")
     return 1 if fails else 0
 
@@ -205,6 +292,42 @@ def _date_of(name: str) -> datetime.date:
         except ValueError:
             pass
     return datetime.date.today()
+
+
+def _read_jsonl(p: Path) -> list:
+    """JSONL 容错读取（v2.2.0 INJ 线数据源）。"""
+    if not p.exists():
+        return []
+    out = []
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            d = json.loads(line)
+            if isinstance(d, dict):
+                out.append(d)
+        except ValueError:
+            continue
+    return out
+
+
+def inj_over_budget(events: list, *, days: int = 30, budget: int = INJ_BUDGET_CHARS) -> tuple:
+    """INJ 判定线①计数（v2.2.0）：近 days 天内 chars 超预算的注入次数与测量样本数。
+
+    无 chars 字段的历史事件（v2.2.0 前）不计入测量样本。"""
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
+    oversized = measured = 0
+    for e in events:
+        try:
+            ts = datetime.datetime.fromisoformat(e["ts"])
+            if ts.tzinfo is not None:
+                ts = ts.astimezone().replace(tzinfo=None)  # R7：aware 时间戳归一本 naive，防 TypeError 静默剔除
+            if ts < cutoff or "chars" not in e:
+                continue
+            measured += 1
+            if int(e["chars"]) > budget:
+                oversized += 1
+        except (KeyError, ValueError, TypeError):
+            continue
+    return oversized, measured
 
 
 if __name__ == "__main__":

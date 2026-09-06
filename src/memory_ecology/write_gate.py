@@ -28,6 +28,7 @@ from pathlib import Path
 
 from lib.config import hermes_root
 from lib.fs import atomic_write, norm, slug_of
+from lib import safeio
 from lib import llm as _llm
 
 HERMES = hermes_root()
@@ -131,6 +132,21 @@ def parse_candidates(pending_dir: Path) -> list[dict]:
     return cands
 
 
+def mark_consumed(pending_dir: Path) -> int:
+    """Q22（2026-09-06）：成功消费后把 pending 文件改名 .done.md——
+    原「只进不出」会被产出探针/人工盘点误读为未消费。返回改名数。"""
+    n = 0
+    for f in sorted(pending_dir.glob("*.md")):
+        if f.name in ("README.md", ".watermark") or f.name.endswith((".done.md", ".rejected.md")):
+            continue
+        try:
+            f.rename(f.with_name(f.name + ".done.md"))
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
 def load_detail(detail_dir: Path) -> list[dict]:
     items = []
     if not detail_dir.exists():
@@ -179,7 +195,7 @@ def add_entry(detail_dir: Path, text: str, fm_extra: dict) -> Path:
         "origin_session_id": fm_extra.get("origin_session_id", ""),
         "superseded_by": "",
     }
-    path = detail_dir / f"{slug_of(text)}.md"
+    path = safeio.safe_entry_path(detail_dir, slug_of(text))
     if path.exists():
         # 已存在（如 pending 重建致 fingerprint 变化）：不覆盖，走 UPDATE 语义
         try:
@@ -190,11 +206,11 @@ def add_entry(detail_dir: Path, text: str, fm_extra: dict) -> Path:
                 old_fm["occurrences"] = "2"
             old_fm["last_seen"] = now
             old_fm["last_verified"] = now
-            atomic_write(path, dump_frontmatter(old_fm, old_body))
+            safeio.write_entry(path, dump_frontmatter(old_fm, old_body), kind="detail")
         except OSError:
             pass  # 读取失败则仍走新写（原子）
     else:
-        atomic_write(path, dump_frontmatter(fm, text[:MAX_BODY]))
+        safeio.write_entry(path, dump_frontmatter(fm, text[:MAX_BODY]), kind="detail")
     return path
 
 
@@ -213,7 +229,7 @@ def update_entry(d: dict) -> None:
             fm["session_count"] = "2"
     fm["last_seen"] = today
     fm["last_verified"] = today  # P1-1：活跃记忆持续复核，不被 eco_review 误归档
-    atomic_write(d["path"], dump_frontmatter(fm, d["body"]))
+    safeio.write_entry(d["path"], dump_frontmatter(fm, d["body"]), kind="detail")
 
 
 def supersede_entry(d: dict, new_slug: str, quarantine_dir: Path) -> Path:
@@ -226,7 +242,7 @@ def supersede_entry(d: dict, new_slug: str, quarantine_dir: Path) -> Path:
     target = date_dir / d["path"].name
     if target.exists():
         target = date_dir / f"{d['path'].stem}-{hashlib.md5(str(target).encode()).hexdigest()[:6]}.md"
-    atomic_write(d["path"], dump_frontmatter(fm, d["body"]))
+    safeio.write_entry(d["path"], dump_frontmatter(fm, d["body"]), kind="detail")
     os.replace(d["path"], target)
     try:
         if d["path"].exists():
@@ -377,10 +393,12 @@ def main() -> int:
                 if hit:
                     target = hit["name"]
                     if not args.dry_run:
-                        new_p = add_entry(args.detail, text, {"type": ctype})
-                        supersede_entry(hit, new_p.stem, QUARANTINE_DIR)
-                        report.append(f"CONFLICT {text[:40]} → 新条目 {new_p.stem}，旧条目 {target} 已 superseded→quarantine {note}")
-                        log_gate(conn, fp, "CONFLICT", target, f"new={new_p.stem} {note}", args.dry_run)
+                        # R10（v2.2.0 review）：先失效旧条目再写新条目——supersede 失败时
+                        # 不再留下「新条目已入库 + 旧条目未失效」的半程状态（次日重试会膨胀 occurrences）
+                        supersede_entry(hit, slug_of(text), QUARANTINE_DIR)
+                        p = add_entry(args.detail, text, {"type": ctype})
+                        report.append(f"CONFLICT {text[:40]} → 新条目 {p.stem}，旧条目 {target} 已 superseded→quarantine {note}")
+                        log_gate(conn, fp, "CONFLICT", target, f"new={p.stem} {note}", args.dry_run)
                     else:
                         report.append(f"CONFLICT {text[:40]} → (dry-run) 旧条目 {target} 将失效")
                         log_gate(conn, fp, "CONFLICT", target, note, args.dry_run)
@@ -402,6 +420,10 @@ def main() -> int:
 
     conn.commit()
     conn.close()
+
+    # Q22（2026-09-06）：全部候选已过指纹幂等，成功跑完后统一标记已消费
+    if not args.dry_run:
+        mark_consumed(args.pending)
 
     if args.dry_run:
         print("== DRY-RUN（未修改任何文件）==")
