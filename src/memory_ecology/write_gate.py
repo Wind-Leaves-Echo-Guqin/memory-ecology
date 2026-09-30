@@ -30,6 +30,9 @@ from lib.config import hermes_root
 from lib.fs import atomic_write, norm, slug_of
 from lib import safeio
 from lib import llm as _llm
+from lib.gatekit import acquire_lock as _acquire_lock, release_lock as _release_lock, connect_db
+from lib.memstore import (parse_frontmatter, dump_frontmatter, parse_candidates,
+                          mark_consumed, load_detail)  # PORT_SPEC §C：口径/解析单源
 
 HERMES = hermes_root()
 PENDING_DIR = HERMES / "memories" / "pending"
@@ -80,87 +83,6 @@ def rule_type(text: str) -> str:
     return "semantic"
 
 
-def parse_frontmatter(text: str) -> tuple[dict, str]:
-    """解析 YAML 简化 frontmatter（--- 块），返回 (dict, 正文)。兼容 BOM/CRLF。"""
-    if text.startswith("\ufeff"):
-        text = text[1:]
-    fm: dict = {}
-    body = text
-    if text.startswith("---"):
-        end = text.find("\n---", 3)
-        if end > 0:
-            block = text[3:end].strip()
-            body = text[end + 4:].strip()
-            for line in block.splitlines():
-                if ":" in line:
-                    k, v = line.split(":", 1)
-                    fm[k.strip()] = v.strip()
-    return fm, body
-
-
-def dump_frontmatter(fm: dict, body: str) -> str:
-    lines = ["---"]
-    for k, v in fm.items():
-        lines.append(f"{k}: {v}")
-    lines.append("---")
-    lines.append("")
-    lines.append(body)
-    return "\n".join(lines) + "\n"
-
-
-
-
-def parse_candidates(pending_dir: Path) -> list[dict]:
-    """读 pending 未消费候选文件（*.md，排除 README/.watermark/.done/.rejected）。带全局 idx。"""
-    cands: list[dict] = []
-    _idx = 0
-    for f in sorted(pending_dir.glob("*.md")):
-        if f.name in ("README.md", ".watermark") or f.name.endswith((".done.md", ".rejected.md")):
-            continue
-        try:
-            lines = f.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for ln in lines:
-            m = re.match(r"^\s*-\s*\[([^\]]+)\]\s*(.+)$", ln)
-            if m:
-                cands.append({
-                    "file": f.name, "raw": ln.strip(), "idx": _idx,
-                    "ctype": m.group(1).strip(), "text": m.group(2).strip(),
-                })
-                _idx += 1
-    return cands
-
-
-def mark_consumed(pending_dir: Path) -> int:
-    """Q22（2026-09-06）：成功消费后把 pending 文件改名 .done.md——
-    原「只进不出」会被产出探针/人工盘点误读为未消费。返回改名数。"""
-    n = 0
-    for f in sorted(pending_dir.glob("*.md")):
-        if f.name in ("README.md", ".watermark") or f.name.endswith((".done.md", ".rejected.md")):
-            continue
-        try:
-            f.rename(f.with_name(f.name + ".done.md"))
-            n += 1
-        except OSError:
-            pass
-    return n
-
-
-def load_detail(detail_dir: Path) -> list[dict]:
-    items = []
-    if not detail_dir.exists():
-        return items
-    for f in sorted(detail_dir.glob("*.md")):
-        try:
-            text = f.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        fm, body = parse_frontmatter(text)
-        if not body:
-            continue
-        items.append({"path": f, "name": f.stem, "fm": fm, "body": body})
-    return items
 
 
 def find_similar(text: str, detail: list[dict], threshold: float) -> list[dict]:
@@ -189,6 +111,7 @@ def add_entry(detail_dir: Path, text: str, fm_extra: dict) -> Path:
         "session_count": "1",
         "first_seen": now,
         "last_seen": now,
+        "last_hit": now,  # PORT_SPEC §6 last_hit 最小件：创建即首 hit（后续由 inject 遥测更新）
         "valid_time": fm_extra.get("valid_time") or now,
         "transaction_time": ts,
         "last_verified": now,
@@ -280,16 +203,6 @@ def _match_target(decision: dict, sims: list) -> dict | None:
     return sims[0]["detail"] if sims else None
 
 
-def _acquire_lock(lock_path: Path) -> bool:
-    try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
-        return False
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -307,7 +220,9 @@ def main() -> int:
         args.detail.mkdir(parents=True, exist_ok=True)
         args.logdir.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(args.db, timeout=10)
+    # dry-run 且库不存在：connect_db 用 :memory: 顶替——不建库不留 0 字节文件；
+    # 库已存在时照常连接读真指纹（dry-run 的去重报告行为与修复前完全一致）
+    conn = connect_db(args.db, dry_run=args.dry_run)
     if not args.dry_run:
         conn.execute("""CREATE TABLE IF NOT EXISTS gate_log(
             ts TEXT, fingerprint TEXT PRIMARY KEY, action TEXT, target TEXT, note TEXT)""")

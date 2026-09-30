@@ -20,9 +20,7 @@
 import argparse
 import datetime
 import difflib
-import hashlib
 import json
-import os
 import re
 import shutil
 import sqlite3
@@ -32,6 +30,8 @@ from pathlib import Path
 from lib.config import hermes_root
 from lib.fs import atomic_write, norm, slug_of
 from lib import llm as _llm
+from lib.gatekit import acquire_lock, release_lock, connect_db
+from lib.memstore import parse_frontmatter, dump_frontmatter, load_detail  # §C：解析/IO 单源
 
 HERMES = hermes_root()
 DETAIL_DIR = HERMES / "memories" / "detail"
@@ -71,55 +71,6 @@ def llm_trait(body: str) -> str:
         return json.loads(m.group(0)).get("trait", "").strip()
     except json.JSONDecodeError:
         return ""
-
-
-def parse_frontmatter(text: str) -> tuple[dict, str]:
-    if text.startswith("\ufeff"):
-        text = text[1:]
-    fm: dict = {}
-    body = text
-    if text.startswith("---"):
-        end = text.find("\n---", 3)
-        if end > 0:
-            block = text[3:end].strip()
-            body = text[end + 4:].strip()
-            for line in block.splitlines():
-                if ":" in line:
-                    k, v = line.split(":", 1)
-                    fm[k.strip()] = v.strip()
-    return fm, body
-
-
-def dump_frontmatter(fm: dict, body: str) -> str:
-    lines = ["---"]
-    for k, v in fm.items():
-        lines.append(f"{k}: {v}")
-    lines.append("---")
-    lines.append("")
-    lines.append(body)
-    return "\n".join(lines) + "\n"
-
-
-
-
-
-
-
-
-def load_detail(detail_dir: Path) -> list[dict]:
-    items = []
-    if not detail_dir.exists():
-        return items
-    for f in sorted(detail_dir.glob("*.md")):
-        try:
-            text = f.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        fm, body = parse_frontmatter(text)
-        if not body:
-            continue
-        items.append({"path": f, "name": f.stem, "fm": fm, "body": body})
-    return items
 
 
 def load_candidates(cand_dir: Path) -> list[dict]:
@@ -205,9 +156,13 @@ def _replace_user_entry(user_file: Path, old: str, new: str) -> bool:
     return True
 
 
+_logged_actions: list[str] = []  # v0.3：本轮已发生的动作（供零动作心跳判断）
+
+
 def log_distill(conn: sqlite3.Connection, action: str, target: str, note: str, dry: bool = False) -> None:
     if dry:
         return
+    _logged_actions.append(action)  # v0.3：记录动作，零动作路径据此写 idle 心跳
     ts = datetime.datetime.now().isoformat(timespec="seconds")
     conn.execute(
         "INSERT INTO distill_log(ts, action, target, note) VALUES(?,?,?,?)",
@@ -226,24 +181,22 @@ def main() -> int:
     args = ap.parse_args()
 
     if not args.dry_run:
-        try:
-            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode())
-            os.close(fd)
-        except FileExistsError:
+        if not acquire_lock(LOCK_FILE):
             print("⚠️ 已有 distill_stage 实例在运行，本轮跳过")
             return 0
     try:
         return _run(args)
     finally:
         if not args.dry_run:
-            LOCK_FILE.unlink(missing_ok=True)
+            release_lock(LOCK_FILE)
 
 
 def _run(args) -> int:
     if not args.dry_run:
         args.cand.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(args.db, timeout=10)
+    # dry-run 且库不存在：connect_db 用 :memory: 顶替——不建库不留 0 字节文件
+    # （docstring「不建目录不建表」兑现）；库已存在时照常连接读真数据，行为与修复前完全一致
+    conn = connect_db(args.db, dry_run=args.dry_run)
     if not args.dry_run:
         conn.execute("""CREATE TABLE IF NOT EXISTS distill_log(
             ts TEXT, action TEXT, target TEXT, note TEXT)""")
@@ -256,6 +209,8 @@ def _run(args) -> int:
     usage = user_usage(args.user)
     if usage > USER_QUOTA * USER_WATERMARK:
         print(f"⏸ USER.md 占用 {usage}/{USER_QUOTA} >{int(USER_WATERMARK*100)}%，本轮暂停蒸馏（等 quota 门挤出）")
+        # v0.3：整轮跳过也是"门在跑"的证据，写 idle 心跳
+        log_distill(conn, "idle", "", "heartbeat 零动作（USER 配额暂停）", args.dry_run)
         conn.commit()
         conn.close()
         return 0
@@ -368,6 +323,10 @@ def _run(args) -> int:
             atomic_write(args.cand / f"{slug}.md", dump_frontmatter(cfm, trait))
         report.append(f"CAND    {trait[:40]}（源 {d['name']}，观察期 {OBSERVE_DAYS} 天）")
         log_distill(conn, "candidate", slug, f"src={d['name']}", args.dry_run)
+
+    # v0.3：本轮零动作时写 idle 心跳（"门在跑、本轮零动作"有据可查）
+    if not _logged_actions:
+        log_distill(conn, "idle", "", "heartbeat 零动作", args.dry_run)
 
     conn.commit()
     conn.close()

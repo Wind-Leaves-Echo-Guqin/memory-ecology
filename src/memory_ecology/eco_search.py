@@ -17,6 +17,11 @@ from pathlib import Path
 
 from lib.config import hermes_root
 
+try:  # v0.3：子进程/管道下 stdout 走 GBK 会导致中文乱码，显式固定 UTF-8
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 HERMES = hermes_root()
 SKILLS = HERMES / "skills"
 AGENT_INDEX = Path.home() / ".memory-ecology"
@@ -137,10 +142,14 @@ def search(conn: sqlite3.Connection, kw: str) -> list[dict]:
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print("用法: python eco_search.py <关键词> [--rebuild]"); return 1
-    kw = sys.argv[1]
-    rebuild_flag = "--rebuild" in sys.argv
+    import argparse
+    ap = argparse.ArgumentParser(description="生态检索 eco_search（只读）")
+    ap.add_argument("keyword", help="检索关键词")
+    ap.add_argument("--rebuild", action="store_true", help="强制重建索引")
+    ap.add_argument("--format", choices=["text", "json"], default="text", help="输出格式（PORT_SPEC §4-C）")
+    args = ap.parse_args()
+    kw = args.keyword
+    rebuild_flag = args.rebuild
 
     need = rebuild_flag or not DB_PATH.exists()
     if not need and DB_PATH.exists():
@@ -151,13 +160,23 @@ def main() -> int:
     try:
         if need:
             rebuild(conn)
-            print(f"（索引已重建 {datetime.datetime.now().strftime('%H:%M')}）")
+            # json 契约纯净性：stdout 只输出 JSON，人读提示走 stderr（终端显示不变）
+            print(f"（索引已重建 {datetime.datetime.now().strftime('%H:%M')}）", file=sys.stderr)
         skills = search(conn, kw)
         wfs = conn.execute(
             "SELECT name, path, description, tags FROM workflows "
             "WHERE name LIKE ? OR description LIKE ? OR tags LIKE ?",
             (f"%{kw}%", f"%{kw}%", f"%{kw}%")).fetchall()
 
+        if args.format == "json":
+            import json
+            print(json.dumps({
+                "ok": True, "query": kw,
+                "skills": [{"name": s["name"], "version": s["ver"], "status": s["status"],
+                            "fate": s["fate"], "indeg": s["deg"], "desc": s["desc"]} for s in skills[:10]],
+                "workflows": [{"name": n, "desc": d} for n, p, d, t in wfs[:5]],
+            }, ensure_ascii=False, indent=2))
+            return 0
         print(f"\n== 技能（{len(skills)} 命中）==")
         for s in skills[:5]:
             loaded = "已加载" if s["status"] == "active" else s["status"]

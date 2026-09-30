@@ -39,7 +39,8 @@ MEMORIES_DIR = HERMES_HOME / "memories"
 CRON_JOBS = HERMES_HOME / "cron" / "jobs.json"
 WORKFLOWS_DIR = Path.home() / ".memory-ecology" / "workflows"
 DESIGNS_DIR = Path.home() / ".memory-ecology" / "designs"
-MEM_MAX_CHARS = 2550  # v2.1.1 ③ 口径对齐：eco_quota 管理线 2550（原 2200 为 v1 体检旧参，2200-2550 区间误报「超限」）
+from lib.metrics import MEMORY_TRIGGER as MEM_MAX_CHARS  # 口径单源（PORT_SPEC §4-C）：原 2550 硬编码
+from lib.metrics import chars_of, parse_l1
 DESKTOP = Path.home() / "Desktop"
 SCORE_HISTORY = DESIGNS_DIR / "eco_score_history.json"
 
@@ -282,7 +283,8 @@ def memory_check():
         if p.exists():
             raw = p.read_text(encoding="utf-8", errors="replace")
             texts[name] = raw
-            out.append((name, p.stat().st_size, len(raw)))
+            # 口径单源（PORT_SPEC §4-C）：原 len(raw) 裸字符数改为门②同口径
+            out.append((name, p.stat().st_size, chars_of(parse_l1(raw)[0])))
     # 词频（疑似，需人工复核）
     keywords = {}
     all_text = "\n".join(texts.values())
@@ -449,6 +451,18 @@ def build_report():
     L.append(f"- 采集时点: 本报告为**快照**——生成后生态可能变化（实测数分钟内新增技能），以生成时刻数据为准")
     L.append("- 范围: 技能生态 / 记忆 / workflows / 备份普查 / cron 健康")
     L.append("- 模式: **只读**——本报告不修改任何生态文件，所有动作为建议")
+    # v0.3：元数据块——GUI 体检页「生态版本 × 报告时间轴」对照卡的数据来源
+    eco_ver = "?"
+    try:
+        _vm = re.search(r"生态版本[::]\s*(v[\d.]+)",
+                        (HERMES_HOME / "VERSION.md").read_text(encoding="utf-8", errors="replace"))
+        if _vm:
+            eco_ver = _vm.group(1)
+    except OSError:
+        pass
+    L.append(f"- 生态版本: {eco_ver}")
+    L.append("- 评分模型: v3（跨版本评分不可比）")
+    L.append("- 口径声明: 技能/记忆/备份 = 目录实时统计 · cron = jobs.json 瞬时 + executions.db 近 7 天 · 评分 = 报告生成时点快照")
     L.append("")
 
     skills, bad = scan_skills()
@@ -733,7 +747,15 @@ def build_report():
     # v1.1：趋势观测——append 记录本次评分（保留最近 20 条，同模型才对比）
     try:
         history.append({"score": score, "time": now.strftime("%Y-%m-%d %H:%M"), "model": "v3"})
-        SCORE_HISTORY.write_text(json.dumps(history[-20:], ensure_ascii=False), encoding="utf-8")
+        # 同分钟多次运行只保留最后一条（分钟粒度趋势图同一 x 只该有一个点）
+        deduped = {}
+        for h in history:
+            if isinstance(h, dict) and "time" in h:
+                deduped[h["time"]] = h
+            else:
+                deduped[("__raw__", len(deduped))] = h
+        history = list(deduped.values())[-20:]
+        SCORE_HISTORY.write_text(json.dumps(history, ensure_ascii=False), encoding="utf-8")
     except OSError:
         pass
     return "\n".join(L)
@@ -754,6 +776,18 @@ if __name__ == "__main__":
         print("--- 报告内容如下（stdout 兜底）---")
         print(report)
         sys.exit(1)
+    # v0.3：按日归档（保留最近 30 份自动清理更旧）——报告从此有历史，GUI 可做时间轴/对比
+    try:
+        archive_dir = DESIGNS_DIR / "体检报告存档"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        today_name = datetime.date.today().isoformat() + ".md"
+        (archive_dir / today_name).write_text(report, encoding="utf-8")
+        archives = sorted(archive_dir.glob("*.md"))
+        for old in archives[:-30]:
+            old.unlink()
+        print(f"✅ 报告已按日归档: {archive_dir / today_name}（现存 {len(archives)} 份，保留 30）")
+    except OSError as e:
+        print(f"⚠️ 归档写入失败（不影响主报告）: {e}")
     skills, bad = scan_skills()
     names = {s["name"] for s in skills}
     print(f"   技能文件 {len(skills)} | 唯一技能 {len(names)} | 报告 {len(report)} 字符")

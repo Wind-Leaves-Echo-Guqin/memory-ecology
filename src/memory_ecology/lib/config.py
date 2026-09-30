@@ -16,6 +16,40 @@ _HERMES = _P3.parent if _P3.name == "src" else _P3
 # 环境变量覆盖（测试/多实例用）
 _ENV_OVERRIDE = os.environ.get("MEMORY_ECOLOGY_ROOT")
 
+# 配置门面（PORT_SPEC §4-D）：TOML 优先，缺失/损坏 fail-open 回默认
+try:
+    import tomllib
+    _HAS_TOML = True
+except ImportError:
+    _HAS_TOML = False  # Python < 3.11
+
+_CONFIG: dict = {}
+_CONFIG_LOADED = False
+
+def _load_config() -> dict:
+    """加载 configs/eco.toml，fail-open 返回空 dict（用代码默认值）。"""
+    global _CONFIG, _CONFIG_LOADED
+    if _CONFIG_LOADED:
+        return _CONFIG
+    _CONFIG_LOADED = True
+    if not _HAS_TOML:
+        return _CONFIG
+    p = _P3 / "configs" / "eco.toml"
+    if not p.is_file():
+        return _CONFIG
+    try:
+        with open(p, "rb") as f:
+            _CONFIG = tomllib.load(f)
+    except Exception:
+        pass  # 损坏 → 空配置 → 代码默认值
+    return _CONFIG
+
+
+def cfg(section: str, key: str, default):
+    """读配置项：configs/eco.toml [section] key → 值；缺失回 default。"""
+    c = _load_config()
+    return c.get(section, {}).get(key, default)
+
 
 def hermes_root() -> Path:
     """生态根目录（生产=hermes；环境变量可覆盖）。"""

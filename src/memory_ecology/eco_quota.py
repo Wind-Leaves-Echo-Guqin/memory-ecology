@@ -69,9 +69,11 @@ USER_DEFAULT = HERMES / "memories" / "USER.md"
 DETAIL_DEFAULT = HERMES / "memories" / "detail"
 DB_DEFAULT = HERMES / "eco.db"
 
-QUOTAS = {"MEMORY": 3000, "USER": 1500}   # 文件名主干 → 配额（字符）
-DEFAULT_QUOTA = 3000                      # 未知文件名默认配额
-RATIO = 0.85                              # 挤出触发线 = 配额 × 85%
+# 口径单源（PORT_SPEC §4-C）：配额常量与 L1 计数移居 lib/metrics，此处仅 re-export 兼容
+from lib.metrics import (MEMORY_QUOTA, USER_QUOTA, RATIO, MEMORY_TRIGGER, USER_TRIGGER,
+                         chars_of, parse_l1)  # noqa: F401
+QUOTAS = {"MEMORY": MEMORY_QUOTA, "USER": USER_QUOTA}   # 文件名主干 → 配额（字符）
+DEFAULT_QUOTA = MEMORY_QUOTA              # 未知文件名默认配额
 MAX_BODY = 220                            # 提升时正文截断上限（字符）
 PREFIX_LEN = 30                           # 同源判定：detail 正文规范化前 N 字符
 PROMO_TYPES = ("semantic", "procedural")  # 提升候选允许的 type
@@ -82,26 +84,6 @@ COOLDOWN_DAYS = 30  # 挤出冷却：extrude-from-L1 条目 N 天内不提升（
 DATE_HIST_RE = re.compile(r"(?:19\d{2}|20[0-2]\d)年|(?:19\d{2}|20(?:0\d|1\d|2[0-5]))[-/.年]\d{1,2}")
 
 
-
-
-def parse_l1(raw: str):
-    """解析 L1 文件文本 → (条目列表, 换行风格)。分隔符 = 单独一行的 §。"""
-    nl = "\r\n" if "\r\n" in raw else "\n"
-    parts = re.split(r"(?m)^[ \t]*§[ \t]*\r?$", raw)
-    entries = []
-    for p in parts:
-        e = p.strip()
-        if e:
-            entries.append(e)
-    return entries, nl
-
-
-def chars_of(entries) -> int:
-    """条目列表的字符数：\\n§\\n 连接 + 末尾 \\n（内部 \\r\\n 归一为 \\n 计 1，
-    与生态体检 read_text 的 universal newline 口径一致——P2-1）。"""
-    if not entries:
-        return 0
-    return len("\n§\n".join(e.replace("\r\n", "\n") for e in entries) + "\n")
 
 
 def serialize_l1(entries, nl: str) -> str:

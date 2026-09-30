@@ -41,14 +41,13 @@
 返回码：0=成功（无失败项），1=存在失败项。
 """
 from lib.fs import atomic_write
+from lib.gatekit import connect_db, write_ledger
+from lib.memstore import clean_value, parse_frontmatter_strict
 
 import argparse
 import difflib
-import os
 import shutil
-import sqlite3
 import sys
-import tempfile
 from datetime import datetime, date
 from pathlib import Path
 
@@ -65,12 +64,6 @@ DEFAULT_THRESHOLD = 90
 SIMILARITY_THRESHOLD = 0.70
 QUARANTINE_DAYS = 90
 FULL_PAIRWISE_LIMIT = 300   # detail 文件数 ≤300 全量两两比较，>300 只比同 type
-
-DB_TABLE_SQL = (
-    'CREATE TABLE IF NOT EXISTS review_log ('
-    'ts TEXT, action TEXT, slug TEXT, reason TEXT)'
-)
-DB_INSERT_SQL = 'INSERT INTO review_log (ts, action, slug, reason) VALUES (?,?,?,?)'
 
 
 def line_ending(ln: str) -> str:
@@ -90,45 +83,6 @@ def is_protected(p: Path) -> bool:
         return True
     name = parts[-1] if parts else ''
     return name in ('memory.md', 'user.md')
-
-
-def clean_value(s) -> str:
-    """极简 YAML 标量清理：去首尾空白、去尾注释、剥引号。"""
-    s = (s or '').strip()
-    idx = s.find(' #')
-    if idx != -1:
-        s = s[:idx].strip()
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
-        s = s[1:-1]
-    return s.strip()
-
-
-def parse_frontmatter(text: str):
-    """极简解析 YAML frontmatter。返回 (fields: dict|None, body: str)。
-
-    无 frontmatter 或格式损坏 → (None, 全文)。body 为正文（去掉首尾空白）。
-    """
-    if text.startswith('﻿'):
-        text = text[1:]
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].rstrip('\r\n').strip() != '---':
-        return None, text
-    end_idx = None
-    for i in range(1, len(lines)):
-        if lines[i].rstrip('\r\n').strip() == '---':
-            end_idx = i
-            break
-    if end_idx is None:
-        return None, text
-    fields = {}
-    for ln in lines[1:end_idx]:
-        s = ln.rstrip('\r\n').strip()
-        if not s or s.startswith('#') or ':' not in s:
-            continue
-        key, _, val = s.partition(':')
-        fields[key.strip()] = clean_value(val)
-    body = ''.join(lines[end_idx + 1:]).strip()
-    return fields, body
 
 
 def parse_date_value(s):
@@ -227,7 +181,7 @@ def scan_detail(detail_dir: Path):
             print(f"  ⚠️ 读取失败 {p.name}: {e}")
             failures += 1
             continue
-        fields, body = parse_frontmatter(raw)
+        fields, body = parse_frontmatter_strict(raw)
         if fields is None:
             print(f"  ⚠️ frontmatter 缺失/损坏，跳过: {p.name}")
             failures += 1
@@ -374,13 +328,11 @@ def apply_quarantine_actions(actions, archive_dir: Path, dry_run: bool) -> int:
 
 
 def write_db(entries, db_path: Path) -> int:
-    """写 review_log 表（CREATE TABLE IF NOT EXISTS）。返回失败数（0/1）。"""
+    """写 review_log 表（gatekit 统一账本骨架）。返回失败数（0/1）。"""
     try:
-        conn = sqlite3.connect(str(db_path), timeout=10)
+        conn = connect_db(db_path)
         try:
-            conn.execute(DB_TABLE_SQL)
-            if entries:
-                conn.executemany(DB_INSERT_SQL, entries)
+            write_ledger(conn, 'review_log', entries, ['ts', 'action', 'slug', 'reason'])
             conn.commit()
         finally:
             conn.close()
@@ -514,6 +466,9 @@ def main(argv=None) -> int:
     for r in q_actions:
         log_entries.append(
             (now_ts, 'quarantine_cleanup', str(r['rel']), f"mtime={r['days']}天"))
+    # v0.3：零动作轮次也写 idle 心跳（"门在跑、本轮零动作"有据可查）
+    if not log_entries:
+        log_entries = [(now_ts, 'idle', '', 'heartbeat 零动作')]
 
     if not dry:
         total_failures += write_db(log_entries, db_path)
