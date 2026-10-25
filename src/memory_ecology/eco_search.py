@@ -7,7 +7,7 @@
 
 用法:
   python eco_search.py <关键词>          # 检索（自动重建索引若过期）
-  python eco_search.py --rebuild         # 强制重建索引
+  python eco_search.py --rebuild         # 强制重建索引（关键词可省，GUI/first_aid 即此形态）
 """
 import datetime
 import re
@@ -37,16 +37,41 @@ def _version_key(v: str) -> tuple:
     return tuple(int(x) for x in parts[:3]) or (0,)
 
 
+def _version_score(v: str) -> int:
+    """版本数值分：按分量大小比较（major 主导），新版本分更高。
+
+    OCR 2026-10-03：原实现按"分量个数"计分——'0.0.1'（3 段）反而压过 '9.0'（2 段）、
+    '1.2.3' 与 '4.5.6' 同分，与"版本新者先"相悖。截前 3 段、每段 <1000。
+    """
+    nums = [int(x) for x in re.findall(r"\d+", v or "")[:3]]
+    while len(nums) < 3:
+        nums.append(0)
+    return min(nums[0], 999) * 1000000 + min(nums[1], 999) * 1000 + min(nums[2], 999)
+
+
 def rebuild(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        DROP TABLE IF EXISTS skills; DROP TABLE IF EXISTS workflows;
-        CREATE TABLE skills(
-          name TEXT PRIMARY KEY, path TEXT, description TEXT, version TEXT,
-          status TEXT, fate TEXT, tolerance TEXT, aliases TEXT,
-          in_degree INT DEFAULT 0, body_heads TEXT, refs TEXT, mtime REAL);
-        CREATE TABLE workflows(
-          name TEXT PRIMARY KEY, path TEXT, description TEXT, tags TEXT, mtime REAL);
-    """)
+    # OCR 2026-10-03：drop+create+insert 包进显式事务——executescript 会先 COMMIT 且
+    # DDL 走 autocommit，中途被杀会留下"表已 DROP/半填充"的库，读端静默查空
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DROP TABLE IF EXISTS skills")
+        conn.execute("DROP TABLE IF EXISTS workflows")
+        conn.execute("""
+            CREATE TABLE skills(
+              name TEXT PRIMARY KEY, path TEXT, description TEXT, version TEXT,
+              status TEXT, fate TEXT, tolerance TEXT, aliases TEXT,
+              in_degree INT DEFAULT 0, body_heads TEXT, refs TEXT, mtime REAL)""")
+        conn.execute("""
+            CREATE TABLE workflows(
+              name TEXT PRIMARY KEY, path TEXT, description TEXT, tags TEXT, mtime REAL)""")
+        _rebuild_populate(conn)
+        conn.commit()
+    except BaseException:
+        conn.rollback()  # 回滚到上一份好索引
+        raise
+
+
+def _rebuild_populate(conn: sqlite3.Connection) -> None:
     now = datetime.datetime.now().timestamp()
 
     # --- 技能 ---
@@ -110,7 +135,6 @@ def rebuild(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT OR REPLACE INTO workflows VALUES (?,?,?,?,?)",
                      (p.stem, str(p), fm.get("description", ""),
                       fm.get("tags", ""), now))
-    conn.commit()
 
 
 def search(conn: sqlite3.Connection, kw: str) -> list[dict]:
@@ -123,7 +147,8 @@ def search(conn: sqlite3.Connection, kw: str) -> list[dict]:
     out = []
     for (name, path, desc, ver, status, fate, tol, aliases, deg, heads, refs) in rows:
         # 忍耐范围过滤（tolerance 声明且不含关键词 → 降序靠后，不剔除）
-        tol_ok = (not tol) or kw in tol
+        # OCR 2026-10-03：lower 对齐 SQL LIKE 的 ASCII 大小写不敏感口径
+        tol_ok = (not tol) or kw.lower() in tol.lower()
         out.append({
             "name": name, "path": path, "desc": desc[:80], "ver": ver,
             "status": status, "fate": fate, "deg": deg,
@@ -133,18 +158,21 @@ def search(conn: sqlite3.Connection, kw: str) -> list[dict]:
                 + STATUS_RANK.get(status, 4) * 10
                 + FATE_RANK.get(fate, 4) * 10
                 + (50 if fate == "archived" else 0)   # 已归档成员靠后（hub 优先）
-                + (5 - min(len(_version_key(ver)), 5)) * 2  # 版本新者先
                 - deg * 3                        # 生态位重要度（被引用多优先）
             ),
         })
-    out.sort(key=lambda x: x["score"])
+    # OCR 2026-10-03：版本改为数值分量比较、作同分裁决（新者先）——原"分量个数"计分
+    # 会让 '0.0.1' 压过 '9.0'、'1.2.3' 与 '4.5.6' 同分
+    out.sort(key=lambda x: (x["score"], -_version_score(x["ver"])))
     return out
 
 
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description="生态检索 eco_search（只读）")
-    ap.add_argument("keyword", help="检索关键词")
+    # OCR 2026-10-03：keyword 改可选——GUI/first_aid 真实调用 `--rebuild` 无关键词，
+    # 原必填位置参数会 exit 2 直接打断重建
+    ap.add_argument("keyword", nargs="?", default="", help="检索关键词（--rebuild 单用时可省）")
     ap.add_argument("--rebuild", action="store_true", help="强制重建索引")
     ap.add_argument("--format", choices=["text", "json"], default="text", help="输出格式（PORT_SPEC §4-C）")
     args = ap.parse_args()
@@ -162,6 +190,18 @@ def main() -> int:
             rebuild(conn)
             # json 契约纯净性：stdout 只输出 JSON，人读提示走 stderr（终端显示不变）
             print(f"（索引已重建 {datetime.datetime.now().strftime('%H:%M')}）", file=sys.stderr)
+            if rebuild_flag and not kw:
+                # --rebuild 无关键词：重建即目的，不再检索
+                if args.format == "json":
+                    import json
+                    print(json.dumps({"ok": True, "query": "", "rebuilt": True,
+                                      "skills": [], "workflows": []},
+                                     ensure_ascii=False, indent=2))
+                else:
+                    n_s = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
+                    n_w = conn.execute("SELECT COUNT(*) FROM workflows").fetchone()[0]
+                    print(f"✅ 索引重建完成：{n_s} 技能 / {n_w} 工作流")
+                return 0
         skills = search(conn, kw)
         wfs = conn.execute(
             "SELECT name, path, description, tags FROM workflows "

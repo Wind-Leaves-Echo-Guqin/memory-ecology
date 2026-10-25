@@ -21,6 +21,7 @@ import math
 import os
 import re
 import sys
+import time
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -29,7 +30,63 @@ try:
 except Exception:
     pass
 
-import yaml
+try:
+    import yaml  # PyYAML：本机 miniconda 有；Hermes 托管 venv 按 pyproject.toml 显式排除 pyyaml
+except ModuleNotFoundError:  # 回退到 venv 已声明的 ruamel.yaml（safe 加载语义等价，168 份 SKILL.md 实测一致）
+    try:
+        import io as _io
+
+        from ruamel.yaml import YAML as _YAML
+
+        _ruamel_safe = _YAML(typ="safe")
+
+        class _CompatYAML:
+            """仅暴露本脚本用到的 safe_load，签名与返回类型和 PyYAML 对齐。"""
+
+            @staticmethod
+            def safe_load(stream):
+                if hasattr(stream, "read"):
+                    return _ruamel_safe.load(stream)
+                return _ruamel_safe.load(_io.StringIO(stream))
+
+        yaml = _CompatYAML()
+    except ModuleNotFoundError:
+        # ★ v2.5.4（F-7）：第三级降级 —— 两个 YAML 库都没有时**不许崩**。
+        #   反直觉之处：本脚本是"环境不完整时最需要跑"的工具，
+        #   却偏偏是唯一硬依赖点（yaml+ruamel 双缺即崩）。
+        #   改为：用极简 frontmatter 解析器顶上（只支持本项目 SKILL.md 的
+        #   `key: value` 平坦结构），并在报告里明确标注"YAML 降级"。
+        class _MiniYAML:
+            """极简 YAML：只解析顶层 key: value（含引号/空值），不支持嵌套。
+
+            够用于 SKILL.md 的 frontmatter（本项目实测均为平坦结构）。
+            解析不了的复杂结构返回空 dict 并由调用方按"缺字段"处理。
+            """
+
+            YAML_FALLBACK_ACTIVE = True
+
+            @staticmethod
+            def safe_load(stream):
+                text = stream.read() if hasattr(stream, "read") else str(stream)
+                out = {}
+                for line in text.splitlines():
+                    if not line.strip() or line.lstrip().startswith("#"):
+                        continue
+                    if line[0] in " \t":          # 嵌套 → 不支持，跳过
+                        continue
+                    m = re.match(r"^([A-Za-z0-9_.-]+)\s*:\s*(.*)$", line)
+                    if not m:
+                        continue
+                    k, v = m.group(1), m.group(2).strip()
+                    if v.startswith(("|", ">", "[", "{")):   # 多行/容器 → 原样保留文本
+                        out[k] = v
+                        continue
+                    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                        v = v[1:-1]
+                    out[k] = v
+                return out
+
+        yaml = _MiniYAML()
 
 from lib.config import hermes_root
 
@@ -52,6 +109,7 @@ LEGAL_MATRIX = {
     ("dormant", "archived"): True,
     ("frozen", "retained"): True,
     ("frozen", "archived"): True,
+    ("candidate", "retained"): True,  # 2026-10-04 拍板：与 eco_state.VALID 对齐（breed 产物为合法持久态）
 }
 REQUIRED_FIELDS = ["name", "description", "version", "status", "fate", "domain", "environment"]
 CONDITIONAL_FIELDS = {
@@ -108,6 +166,10 @@ def scan_skills():
         if err:
             bad.append((str(rel), err))
             continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue  # P2：文件在 rglob 与 stat 之间被删/移动 → 跳过而非整份报告崩溃
         hermes_meta = meta.get("metadata", {}).get("hermes", {}) if isinstance(meta.get("metadata"), dict) else {}
         skills.append({
             "path": str(rel),
@@ -126,8 +188,8 @@ def scan_skills():
             "has_related_key": "related_skills" in hermes_meta,
             "tags": _as_list(hermes_meta.get("tags")),
             "has_tolerance": "tolerance" in meta,
-            "file_size": p.stat().st_size,
-            "mtime": p.stat().st_mtime,
+            "file_size": st.st_size,
+            "mtime": st.st_mtime,
         })
     return skills, bad
 
@@ -404,7 +466,7 @@ def health_score(skills, dups, dangling, ver_rate, missing, cron_errs, mem_over,
     items = []  # (扣分, 原因)
     if dups:
         items.append((15, f"重复副本 {len(dups)} 组"))
-    if ver_rate < 0.9:
+    if skills and ver_rate < 0.9:  # P2：空库 0/0 不再触发假扣分
         items.append((10, f"版本覆盖率 {ver_rate * 100:.0f}% <90%"))
     field_miss = sum(missing.values()) if missing else 0
     if field_miss > 0:
@@ -442,7 +504,107 @@ def fmt_size(n):
     return f"{n}B"
 
 
-def build_report():
+def collect_cache_stats(days: int = 7) -> dict:
+    """v2.5.2 P0-E：缓存命中率监控（只读 state.db）。
+
+    为什么需要这个：实测本机命中率 98.64%，一旦某次改动破坏了 prompt 前缀，
+    成本会从 143 元涨到 2542 元（×17.8）。**任何优化都必须先有这条曲线**，
+    否则改了也不知道是赚是亏。
+
+    返回 dict；任何环节失败都返回 {"available": False, "error": ...}，绝不抛异常
+    （体检不能因为监控本身崩掉）。
+    """
+    db = HERMES_HOME / "state.db"
+    if not db.is_file():
+        return {"available": False, "error": f"找不到 {db}"}
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            cur = con.cursor()
+            cur.execute("""SELECT SUM(input_tokens), SUM(cache_read_tokens),
+                                  SUM(cache_write_tokens), SUM(output_tokens),
+                                  SUM(reasoning_tokens), COUNT(*)
+                           FROM sessions""")
+            inp, cr, cw, out, rt, n = cur.fetchone()
+            if not n:
+                return {"available": False, "error": "sessions 表为空"}
+            inp, cr, cw, out, rt = (inp or 0), (cr or 0), (cw or 0), (out or 0), (rt or 0)
+            total_prompt = inp + cr + cw
+            hit = (cr / total_prompt) if total_prompt else 0.0
+            rec = {
+                "available": True,
+                "sessions": n,
+                "input_tokens": inp,
+                "cache_read_tokens": cr,
+                "cache_write_tokens": cw,
+                "prompt_side_total": total_prompt,
+                "hit_rate": hit,
+                "output_tokens": out,
+                "reasoning_tokens": rt,
+                "reasoning_share_of_output": (rt / out) if out else 0.0,
+            }
+            # 近 N 天（按 sessions 的时间列；列名不同版本可能不同，失败就跳过）
+            for col in ("updated_at", "created_at", "last_active_at", "started_at"):
+                try:
+                    cur.execute(f"PRAGMA table_info(sessions)")
+                    names = {r[1] for r in cur.fetchall()}
+                    if col not in names:
+                        continue
+                    # started_at / last_activity_at 是 REAL unix 时间戳；
+                    # *_at TEXT 的变体才是 datetime 字符串。按列类型选比较方式。
+                    _is_real = any(r[1] == col and str(r[2]).upper() in ("REAL", "INTEGER", "NUMERIC")
+                                   for r in cur.execute("PRAGMA table_info(sessions)").fetchall())
+                    if _is_real:
+                        _cut = time.time() - int(days) * 86400
+                        _where = f"{col} >= ?"
+                        _params = (_cut,)
+                    else:
+                        _where = f"{col} >= datetime('now', '-{int(days)} days')"
+                        _params = ()
+                    cur.execute(f"""SELECT SUM(input_tokens), SUM(cache_read_tokens)
+                                    FROM sessions WHERE {_where}""", _params)
+                    r2 = cur.fetchone()
+                    if r2 and r2[0] is not None:
+                        i2, c2 = (r2[0] or 0), (r2[1] or 0)
+                        rec["recent_days"] = days
+                        rec["recent_hit_rate"] = (c2 / (i2 + c2)) if (i2 + c2) else 0.0
+                        rec["recent_time_col"] = col
+                    break
+                except sqlite3.Error:
+                    continue
+            return rec
+        finally:
+            con.close()
+    except Exception as e:                     # noqa: BLE001 - 体检不可因监控崩
+        return {"available": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def render_cache_stats(st: dict) -> list[str]:
+    """把缓存统计渲染成报告行。"""
+    L = ["", "## 缓存命中率（P0-E 监控 · 前缀健康度）", ""]
+    if not st.get("available"):
+        L.append(f"- ⚠️ 不可用：{st.get('error', '未知原因')}")
+        return L
+    L.append(f"- 统计范围: {st['sessions']:,} 个会话（只读 state.db）")
+    L.append(f"- prompt 侧总量: {st['prompt_side_total']:,} token")
+    L.append(f"  - 新输入（未命中）: {st['input_tokens']:,}")
+    L.append(f"  - 缓存命中读取: {st['cache_read_tokens']:,}")
+    L.append(f"  - 缓存写入: {st['cache_write_tokens']:,}")
+    L.append(f"- **缓存命中率: {st['hit_rate']:.2%}**")
+    if "recent_hit_rate" in st:
+        L.append(f"- 近 {st['recent_days']} 天命中率: {st['recent_hit_rate']:.2%}"
+                 f"（按 {st['recent_time_col']}）")
+    L.append(f"- 输出: {st['output_tokens']:,} token"
+             f"，其中 reasoning {st['reasoning_tokens']:,}"
+             f"（占 {st['reasoning_share_of_output']:.1%}）")
+    L.append("")
+    L.append("> **为什么盯这条**：命中率从 98.6% 掉到 50%，成本约 ×8；"
+             "掉到 0 则 ×17.8。任何改动前后都要看这行有没有跌。")
+    return L
+
+
+def build_report(write_history: bool = True):
     now = datetime.datetime.now().astimezone()
     L = []
     L.append("# 生态体检报告（正式版 v1.1 · 只读）")
@@ -451,6 +613,12 @@ def build_report():
     L.append(f"- 采集时点: 本报告为**快照**——生成后生态可能变化（实测数分钟内新增技能），以生成时刻数据为准")
     L.append("- 范围: 技能生态 / 记忆 / workflows / 备份普查 / cron 健康")
     L.append("- 模式: **只读**——本报告不修改任何生态文件，所有动作为建议")
+    # v2.5.4（F-7）：YAML 降级时必须显式告知，否则用户不知道自己在看降级解析的结果
+    if getattr(yaml, "YAML_FALLBACK_ACTIVE", False):
+        L.append("- ⚠️ **YAML 降级模式**：本机未安装 PyYAML 与 ruamel.yaml，"
+                 "frontmatter 用内置极简解析器（只支持顶层 key: value）。"
+                 "涉及嵌套结构的技能元数据可能被忽略，相关统计偏低。"
+                 "安装任一 YAML 库即可恢复完整解析。")
     # v0.3：元数据块——GUI 体检页「生态版本 × 报告时间轴」对照卡的数据来源
     eco_ver = "?"
     try:
@@ -463,6 +631,14 @@ def build_report():
     L.append(f"- 生态版本: {eco_ver}")
     L.append("- 评分模型: v3（跨版本评分不可比）")
     L.append("- 口径声明: 技能/记忆/备份 = 目录实时统计 · cron = jobs.json 瞬时 + executions.db 近 7 天 · 评分 = 报告生成时点快照")
+    L.append("")
+
+    # P0-E：缓存命中率（前缀健康度）——放在最前面，因为它是成本的第一驱动
+    try:
+        _cache_st = collect_cache_stats()
+        L.extend(render_cache_stats(_cache_st))
+    except Exception as _e:      # noqa: BLE001
+        L.append(f"- ⚠️ 缓存统计失败: {_e}")
     L.append("")
 
     skills, bad = scan_skills()
@@ -500,8 +676,15 @@ def build_report():
             prev_score = h
             break
     if prev_score:
-        delta = score - prev_score["score"]
-        L.append(f"- 上次评分: {prev_score.get('score')}（{prev_score.get('time', '?')}）→ 本次 {score}（Δ{delta:+d}）")
+        try:
+            _pv = prev_score.get("score")
+            if _pv is None:
+                raise ValueError("prev score missing")
+            delta = int(score) - int(_pv)
+            L.append(f"- 上次评分: {prev_score.get('score')}（{prev_score.get('time', '?')}）→ 本次 {score}（Δ{delta:+d}）")
+        except (TypeError, ValueError, KeyError):
+            # P2：历史评分损坏/非整数 → 跳过对比，报告照常产出
+            L.append(f"- 上次评分: {prev_score.get('score')}（{prev_score.get('time', '?')}）→ 本次 {score}（历史评分格式异常，跳过对比）")
     else:
         L.append("- 上次评分: 无（首测基线，此后同模型内可对比趋势）")
     L.append(f"- 分项: {score_detail}")
@@ -708,6 +891,8 @@ def build_report():
             if lr:
                 try:
                     lr_dt = datetime.datetime.fromisoformat(str(lr))
+                    if lr_dt.tzinfo is None:
+                        lr_dt = lr_dt.astimezone()  # P2：naive 本地时间转 aware，修复混减 TypeError 静默失效
                     if (now - lr_dt).total_seconds() > 7 * 86400:
                         stale = " ⚠️>7天未运行"
                 except Exception:
@@ -729,8 +914,8 @@ def build_report():
         if len(dangling) - in_opt_count:
             L.append(f"| P0 | 悬空引用排查（{len(dangling) - in_opt_count} 个无落点） | 修复引用或新建技能 | 引用图无红标 |")
     field_parts = "、".join(f"{f} {c}" for f, c in missing.items()) if missing else "无"
-    batch_n = math.ceil(len(skills) / 4)
-    tail_n = len(skills) - 3 * batch_n
+    batch_n = math.ceil(len(skills) / 4) if skills else 0
+    tail_n = max(len(skills) - 3 * batch_n, 0)  # P2：小库越界（n=5 时旧式计算得 -1）
     L.append("| P1 | 补齐 frontmatter（缺: " + field_parts + f"） | 按 4 批执行（每批 {batch_n} 个，尾批 {tail_n}，共 {len(skills)} 技能），每批 git 快照（试点区：副本保留区，不干扰 P0 删除路径） | 重跑 §1/§2/§3 指标改善 |")
     L.append("| P1 | 圈定 protected.md 核心区 | 备份清单 + 核心技能清单入档 | md/json 一致性校验 |")
     L.append("| P1 | cron 报错处置（error 任务下次运行自动复核；需 gateway 运行中） | 自动复核 last_status 转 ok；持续 error 则人工排查（含脚本路径解析核查） | 报告 §8 无 error |")
@@ -738,7 +923,7 @@ def build_report():
         L.append(f"| P1 | 备份异常处置（{len(backup_flags)} 个疑似异常） | 核对内容完整性（如 json 可解析/库文件可打开，空库判定：0 行业务表），确认异常则补做有效备份 | 报告 §7 无 ⚠️ |")
     L.append("| P1 | 建立备份策略（记忆/索引/cron/配置当前零备份） | 定期备份 MEMORY.md/USER.md/jobs.json/index.db 到备份区，含保留期与校验 | 恢复演练通过 |")
     if mem_dups or mem_over:
-        L.append("| P2 | 记忆去重/精简（MEMORY 超字符上限或跨文件重复） | 合并重复条目、指针化（候选：大条目→对应技能，约省 1000+ 字符）；清理前先备份 | MEMORY 字符数回落至上限内 |")
+        L.append("| P2 | 记忆去重/精简（MEMORY 超字符上限或跨文件重复） | 合并重复条目、指针化（候选：SuperMap/AstrBot/GeoScene/Claude Code/FY-4B 大条目→对应技能，约省 1000+ 字符）；清理前先备份 | MEMORY 字符数回落至上限内 |")
     L.append("")
     L.append("> 术语: P0=立即 / P1=近期 / P2=顺带；L1=低风险标记建议（未执行）")
     L.append("")
@@ -755,16 +940,57 @@ def build_report():
             else:
                 deduped[("__raw__", len(deduped))] = h
         history = list(deduped.values())[-20:]
-        SCORE_HISTORY.write_text(json.dumps(history, ensure_ascii=False), encoding="utf-8")
-    except OSError:
-        pass
+        # v2.5.0：--no-write 时不得写盘，否则 help 文案就是假的
+        if write_history:
+            SCORE_HISTORY.write_text(json.dumps(history, ensure_ascii=False), encoding="utf-8")
+    except OSError as _e:
+        print(f"⚠️ 评分历史写入失败: {_e}", file=sys.stderr)
     return "\n".join(L)
 
 
 if __name__ == "__main__":
-    report = build_report()
-    out1 = DESKTOP / "生态体检报告-v1.1.md"
-    out2 = DESIGNS_DIR / "生态体检报告-v1.1.md"
+    # v2.5.0：加 --no-write（用户模拟测试反馈：体检命令不问就写 3 处，
+    # 且 `--help` 被忽略直接执行并写盘，对只想看报告的人是意外副作用）。
+    # 另外：空库不再给"95/100 健康"——空库无法评估健康度，给分数会误导。
+    #
+    # ★ 不提供 --root：本模块在 import 期就把 HERMES_HOME 等路径算成常量，
+    #   而 lib/config 也在 import 时读走了 MEMORY_ECOLOGY_ROOT —— 运行期再设环境变量
+    #   是空操作。要换根请用环境变量重启进程。
+    import argparse as _ap
+    _p = _ap.ArgumentParser(
+        description="生态体检（只读）。默认把报告写到 ~/Desktop 与 ~/.memory-ecology/designs。")
+    _p.add_argument("--no-write", action="store_true",
+                    help="只输出到 stdout，不写任何文件（推荐脚本/CI 使用）")
+    _args, _ = _p.parse_known_args()
+
+    # 空库守卫必须在 build_report() 之前：
+    #   ① build_report 里有副作用（写评分历史），放后面会让 --no-write 也写盘
+    #   ② 空库时没必要跑全盘扫描（技能/备份普查/引用图）几十秒
+    _detail_dir = MEMORIES_DIR / "detail"
+    if not _detail_dir.is_dir():
+        print(f"找不到记忆目录: {_detail_dir}", file=sys.stderr)
+        print("请确认数据根正确（设 MEMORY_ECOLOGY_ROOT 后重新运行）。", file=sys.stderr)
+        sys.exit(1)
+    if len(list(_detail_dir.glob("*.md"))) == 0:
+        print("库为空（memories/detail 下 0 条），无法评估健康度。")
+        print("先存入记忆再跑体检；或加 --no-write 只看当前状态。")
+        sys.exit(0)
+
+    report = build_report(write_history=not _args.no_write)
+
+    if _args.no_write:
+        print(report)
+        sys.exit(0)
+
+
+    # v2.5.6 修复：out1/out2 在 v2.5.0 加 `--no-write` 重写 __main__ 时被漏定义 ——
+    # 每天 12:40 的 cron 跑到这里必 NameError（2026-10-23 17:42 部署后首次触发，
+    # 实测 `NameError: name 'out1' is not defined`，而上次成功是 10-21）。
+    DESIGNS_DIR.mkdir(parents=True, exist_ok=True)
+    DESKTOP.mkdir(parents=True, exist_ok=True)
+    out1 = DESKTOP / "生态体检报告.md"
+    out2 = DESIGNS_DIR / "生态体检报告.md"
+
     try:
         out1.write_text(report, encoding="utf-8")
         out2.write_text(report, encoding="utf-8")

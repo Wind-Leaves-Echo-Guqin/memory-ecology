@@ -52,8 +52,11 @@ REQUIRED_FIELDS = ("name", "description", "version", "status", "fate",
 
 
 def parse_frontmatter(text: str) -> dict:
-    """解析 SKILL.md frontmatter；缺字段补默认值。"""
-    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    """解析 SKILL.md frontmatter；缺字段补默认值。
+    P0-5：正则兼容 CRLF/BOM——旧版 `^---\\n` 在 Windows CRLF 文件上整体解析失败，
+    所有技能静默变 undeclared（体检口径算合法）→ 全部漏检。"""
+    text = text.lstrip("\ufeff")
+    m = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n", text, re.S)
     fm: dict = {}
     if m:
         for line in m.group(1).splitlines():

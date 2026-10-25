@@ -4,7 +4,8 @@
 决定注入管线中的每条经验/笔记是注入（keep）、缩短（shorten）、还是跳过（drop）。
 
 首版（决策 8）：shorten 降级为 keep（接口保留三态，等待 brief 机制）。
-drop 灰度首月只对「occurrences==1 且 last_seen>60d」类生效。
+drop 灰度首月生效范围（OCR 2026-10-03：与代码规则 4/5 对齐）：
+「occurrences<=1 且 last_seen>60d」与「age>180d 且 status=draft 的陈旧未验证草稿」两类。
 记忆线字段允许 None（fail-open——缺数据不阻塞注入）。
 
 影子模式：调用方在注入前调 decide()，将结果写入 .inject_decisions.jsonl，
@@ -39,8 +40,10 @@ def decide(
     规则优先级（先到先停）：
     1. quarantined → drop（隔离区条目不注入）
     2. status == "verified" → keep（已验证条目永不 drop）
-    3. hit_count_30d is not None and hit_count_30d >= 2 → keep（近30天有命中）
-    4. occurrences == 1 and last_seen_days > stale_days → drop（从未复现+陈旧）
+    3. hit_count_30d is not None and hit_count_30d >= 2 → keep
+       （近30天命中≥2 次才保护；恰好 1 次命中不在此列，OCR 2026-10-03 对齐）
+    4. occurrences <= 1 and last_seen_days > stale_days → drop
+       （从未复现+陈旧；<=1 含 0/负数，正常数据 occurrences>=1，OCR 2026-10-03 对齐）
     5. age_days > 180 and status == "draft" → drop（陈旧未验证草稿）
     6. 其余 → keep（fail-open）
     """
@@ -54,11 +57,11 @@ def decide(
     if status == "verified":
         return GateDecision("keep", "high", "verified 条目保持注入", ["verified"])
 
-    # 3. 近期有命中（遥测上线后生效）
+    # 3. 近期有命中（遥测上线后生效；>=2 次才 keep——单次命中不保护）
     if hit_count_30d is not None and hit_count_30d >= 2:
         return GateDecision("keep", "high", f"近30天命中 {hit_count_30d} 次", ["hot"])
 
-    # 4. 从未复现 + 陈旧 → drop
+    # 4. 从未复现 + 陈旧 → drop（<=1 含 0/负数，与文档口径一致）
     if occurrences is not None and occurrences <= 1:
         if last_seen_days is not None and last_seen_days > stale_days:
             signals.append("occ1_stale")

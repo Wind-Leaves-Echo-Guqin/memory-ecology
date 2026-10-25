@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.1.0 (2026-10-25)
+
+Core sync from the compatible line — the open core catches up with `memory-ecology-compat` v3.1.0 (previous sync: v2.2.4-era, commit `bf11d00`). Same recipe as before: gate scripts + `lib` mirror the compat production tree; compat-only surfaces (retrieval `memory_query`, vector cache, experience notebook, backup/restore, GUI) stay in the compat repo.
+
+- **Entry discipline**: new `lib/cli_base.py` — shared CLI bootstrap (encoding fallback / data-root resolution / dirs / mutual exclusion / failure exits) wired into the gate CLIs. Fixes "data written but exit 1" on GBK consoles, gate ② lock files that never created parent dirs, and gate ④ computing its own data root while ignoring `MEMORY_ECOLOGY_ROOT`.
+- **Concurrency & Windows hardening**: `gatekit` no longer reclaims a lock held by the same process (multi-agent re-entry now mutual-excludes); `fs.atomic_write` gains retry/rollback on Windows when a reader holds the target; BOM-tolerant reads (`utf-8-sig`) stop silently dropping the first pending candidate.
+- **Privacy**: new `lib/pii.py` — PII detection/redaction applied to write-gate ledger lines and the quota EXTRUDE ledger (same caliber on both gates).
+- **Similarity & contracts**: similarity logic now single-sourced in new `lib/similarity.py`; `lib/contracts.py` folded away (no importers remain).
+- **Version single source**: `lib/__init__.py` carries `__version__ = "3.1.0"` — gate startup banners and releases read this instead of four divergent version constants.
+- **LLM endpoint configurable**: `lib/llm.py` resolves base_url/model from config/env instead of hardcoding; rule-tie fallback downgraded to DISPUTE (false positives 43% → 0); body caps configurable with visible truncation marks; config Guard for the v3.1 back-to-source-text / scope work.
+- Validation: `compileall` clean; script-mode import smoke of all 9 gate scripts OK; `tests/test_cleanroom.py` 4/4 green.
+
 ## v2.2.0 (2026-09-06)
 
 Safe write-path hardening (the v2.2 first item) + evaluation gate lines:

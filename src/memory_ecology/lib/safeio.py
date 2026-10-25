@@ -16,10 +16,14 @@ from . import fs
 SAFE_NAME_RE = re.compile(r"^[\w.\-\u4e00-\u9fff]+$")  # \w 含字母数字下划线
 
 DETAIL_TYPES = {"semantic", "episodic", "procedural", "lesson"}
-DETAIL_STATUS = {"active", "dormant", "superseded"}
+# v2.5.7（红队 R-04 枚举漂移）：archived 是真实存在的失效态——memory_query 排序、
+# revive 复活、distill 跳过、sqlindex 排除都在用它，schema 必须认它合法；
+# 否则「索引层当合法排除态、写入层判非法」会把归档条目挡在安全写路径之外。
+DETAIL_STATUS = {"active", "dormant", "superseded", "archived"}
 EXPERIENCE_TYPES = {"error", "pattern", "negative", "success", "link"}
 EXPERIENCE_STATUS = {"draft", "verified", "dormant", "superseded"}
-DATE_KEYS = ("first_seen", "last_seen", "valid_time", "last_verified", "last_hit", "created")
+DATE_KEYS = ("first_seen", "last_seen", "valid_time", "last_verified", "last_hit", "created",
+             "superseded_at", "distilled_at")
 COUNT_KEYS = ("occurrences", "session_count")
 
 
@@ -41,7 +45,7 @@ def safe_entry_path(root, stem: str):
 def _check_enums(fm: dict, types: set, statuses: set, errs: list) -> None:
     t = fm.get("type")
     if t and t not in types:
-        errs.append(f"type 非法: {t!r}")
+        errs.append(f"type 非法: {t!r}（合法值: {sorted(types)}）")   # v2.5.0：说明合法值
     s = fm.get("status")
     if s and s not in statuses:
         errs.append(f"status 非法: {s!r}")
@@ -72,10 +76,17 @@ def validate_detail_fm(fm: dict) -> list:
     return errs
 
 
-def validate_experience_fm(fm: dict) -> list:
+def validate_experience_fm(fm: dict, body: str = "") -> list:
+    """经验条目 schema 校验。body 可选传入——R9（2026-10-04）：error 型必填 symptom/cause，
+    而生产约定这些字段写在**正文**（title:/symptom:/cause: 行）而非 frontmatter
+    （实测 191/191 条如此），故两处都认。"""
     errs: list = []
     _check_enums(fm, EXPERIENCE_TYPES, EXPERIENCE_STATUS, errs)
     _check_dates_counts(fm, errs)
+    if fm.get("type") == "error":
+        for k in ("symptom", "cause"):
+            if not str(fm.get(k) or "").strip() and not re.search(rf"^{k}\s*:\s*\S", body or "", re.M):
+                errs.append(f"error 型缺必填字段: {k}")
     return errs
 
 
@@ -101,8 +112,8 @@ def write_entry(path, text: str, *, kind: str | None = None, backup_tag: str | N
     from pathlib import Path
     path = Path(path)
     if kind:
-        fm, _ = parse_frontmatter(text)
-        errs = validate_detail_fm(fm) if kind == "detail" else validate_experience_fm(fm)
+        fm, body = parse_frontmatter(text)
+        errs = validate_detail_fm(fm) if kind == "detail" else validate_experience_fm(fm, body)
         if errs:
             raise ValueError(f"{path.name} schema 校验失败: {'; '.join(errs)}")
     if backup_tag:

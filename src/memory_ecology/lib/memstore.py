@@ -128,27 +128,34 @@ def load_detail(detail_dir: Path) -> list[dict]:
 
 
 def detail_prefixes(items: list[dict], n: int = 30) -> dict:
-    """detail 条目 → {slug: 规范化前 N 字符}（供 L1 同源映射）。"""
+    """detail 条目 → {slug: 规范化前 N 字符}（仅 **active** 条目参与——
+    dormant/superseded 不参与同源判定，口径与门②生产版一致，2026-10-04 单源收编）。"""
     from lib.fs import norm
-    return {d["name"]: norm(d["body"])[:n] for d in items if d.get("body")}
-
-
-def qualified_prefixes(items: list[dict], n: int = 30) -> set:
-    """status=active 的 detail 条目规范化前缀集合。"""
-    from lib.fs import norm
-    return {norm(d["body"])[:n] for d in items
-            if d.get("fm", {}).get("status") == "active" and d.get("body")}
+    return {d["name"]: norm(d["body"])[:n]
+            for d in items
+            if d.get("fm", {}).get("status", "").strip().lower() == "active" and d.get("body")}
 
 
 def is_same_source(detail_body: str, entry_text: str, n: int = 30) -> bool:
-    """判定 L1 条目是否与 detail 正文同源（规范化前 N 字符比对）。"""
+    """同源判定（单源收编 2026-10-04，取门②生产语义）：detail 正文规范化前 N 字符
+    被 L1 条目规范化文本**包含**（单向）。旧版双向包含（nd in ne or ne in nd）
+    从无调用方，且双向会把「L1 条目是 detail 前缀」误判同源。"""
     from lib.fs import norm
     nd = norm(detail_body)[:n]
-    ne = norm(entry_text)[:n]
-    return bool(nd and ne and (nd in ne or ne in nd))
+    ne = norm(entry_text)
+    return bool(nd) and bool(ne) and nd in ne
 
 
 # ── pending 候选操作 ─────────────────────────────────────────────────
+
+PENDING_SKIP_NAMES = ("README.md", ".watermark")
+PENDING_SKIP_SUFFIXES = (".done.md", ".rejected.md")
+
+
+def is_pending_active(name: str) -> bool:
+    """pending 目录里待处理文件名判定（parse_candidates / mark_consumed / 门①消费判定共用）。"""
+    return name not in PENDING_SKIP_NAMES and not name.endswith(PENDING_SKIP_SUFFIXES)
+
 
 def parse_candidates(pending_dir: Path) -> list[dict]:
     """读取 pending 目录 .md（排除已消费/拒绝）→ 候选列表。"""
@@ -157,28 +164,47 @@ def parse_candidates(pending_dir: Path) -> list[dict]:
         return cands
     _idx = 0
     for f in sorted(pending_dir.glob("*.md")):
-        if f.name in ("README.md", ".watermark") or f.name.endswith((".done.md", ".rejected.md")):
+        if not is_pending_active(f.name):
             continue
         try:
             lines = f.read_text(encoding="utf-8").splitlines()
         except OSError:
             continue
         for ln in lines:
-            m = re.match(r"^\s*-\s*\[([^\]]+)\]\s*(.+)$", ln)
+            # 剥离任务 checkbox 前缀（上游提取管道泄漏）："- [ ] [fact] x"、"- [] x"、"- [x] y"
+            # 旧版会把前者解析出空 type、后者整行静默丢弃
+            ln2 = re.sub(r"^\s*-\s*\[\s*[xX]?\s*\]\s+", "- ", ln)
+            m = re.match(r"^\s*-\s*\[([^\]]+)\]\s*(.+)$", ln2)
             if m:
                 cands.append({
                     "file": f.name, "raw": ln.strip(), "idx": _idx,
                     "ctype": m.group(1).strip(), "text": m.group(2).strip(),
                 })
                 _idx += 1
+            elif ln2 != ln:
+                # 剥过 checkbox 但无类型标注 → 仍作候选（type 交给门① LLM/规则判定）
+                text = ln2.strip().lstrip("-").strip()
+                if text:
+                    cands.append({
+                        "file": f.name, "raw": ln.strip(), "idx": _idx,
+                        "ctype": "", "text": text,
+                    })
+                    _idx += 1
     return cands
 
 
-def mark_consumed(pending_dir: Path) -> int:
-    """消费后把 pending 文件改名 .done.md。返回改名数。（Q22）"""
+def mark_consumed(pending_dir: Path, only: set[str] | None = None) -> int:
+    """消费后把 pending 文件改名 .done.md。返回改名数。（Q22）
+
+    only=None：消费全部待处理文件（旧行为）。
+    only=文件名集合：只消费集合内文件——门①截断/失败时未达终态的文件
+    留在 pending，下轮继续（P0-1：防截断候选被静默吞掉）。
+    """
     n = 0
     for f in sorted(pending_dir.glob("*.md")):
-        if f.name in ("README.md", ".watermark") or f.name.endswith((".done.md", ".rejected.md")):
+        if not is_pending_active(f.name):
+            continue
+        if only is not None and f.name not in only:
             continue
         try:
             f.rename(f.with_name(f.name + ".done.md"))

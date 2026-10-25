@@ -50,6 +50,8 @@ def find_skill(name: str) -> Path | None:
 
 
 def main() -> int:
+    from lib.cli_base import bootstrap as _bootstrap  # v2.5.0：编码兜底
+    _bootstrap()
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True)
     ap.add_argument("--sources", required=True, help="逗号分隔的亲代技能名")
@@ -112,16 +114,26 @@ evolved_from: [{', '.join(src_names)}]
 - [ ] 验证引用段可用（skill_view 实测）
 - [ ] 评估通过后移入生态（skills/ 正式区）并置 status=active
 """
-    out = CANDIDATES / args.name / "SKILL.md"
+    # P1：技能名消毒——旧版 --name 未过滤，`../x` 可逃出 .candidates 写任意位置
+    safe_name = re.sub(r"[^\w\-]+", "-", args.name).strip("-")
+    if not safe_name or safe_name in (".", ".."):
+        print(f"⚠️ 非法技能名: {args.name!r}")
+        return 1
+    out = CANDIDATES / safe_name / "SKILL.md"
     if args.dry_run:
         print(f"\n[dry-run] 将写入: {out}")
         print(body[:600])
         return 0
 
     out.parent.mkdir(parents=True, exist_ok=True)
+    # P1：同名候选不覆盖——可能含人工补写的 description/待办（与 evolve 的不覆盖防护对齐）
+    if out.exists():
+        print(f"⚠️ 候选已存在，不覆盖: {out}")
+        print("   如需重建请先人工删除旧候选")
+        return 1
     out.write_text(body, encoding="utf-8")
     print(f"\n✅ 候选技能已创建: {out}")
-    print(f"   血缘: {', '.join(src_names)} → {args.name}（亲代保留）")
+    print(f"   血缘: {', '.join(src_names)} → {safe_name}（亲代保留）")
     return 0
 
 
