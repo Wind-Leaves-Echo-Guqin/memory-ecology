@@ -2,12 +2,26 @@
 
 **A lifecycle approach to agent memory: memory is not a warehouse, it is an ecosystem.**
 
+`MIT` · `Python 3.10+` · `zero-dependency core` · `pure local` · `v3.1.0`
+
+> 记忆不是库存，是生态。—— Memory is not a warehouse, it is an ecosystem.
+
 Most agent-memory systems today are *engines* — they focus on writing, retrieving, and offloading
 memories (TencentDB Agent Memory, mem0, Zep, Letta, MemOS, …). This project takes a different
 position: the hard problem is not storing more, it is **governance** — birth, life, death, and
 evolution of memories in a single-user, low-maintenance environment.
 
-> 记忆不是库存，是生态。—— Memory is not a warehouse, it is an ecosystem.
+## TL;DR
+
+- **What** — four lifecycle gates (write → consolidate → distill → review) keep agent memory
+  bounded, alive, and reversible. Rule-driven, zero maintenance, LLM only adjudicates similarity
+  conflicts (gate ①) and persona wording (gate ③); physical deletion is disabled at code level.
+- **This repository** — the open **core governance layer**: methodology docs + the 9 gate scripts
+  and shared `lib/` they run on.
+- **Need host adapters?** — [memory-ecology-compat](https://github.com/Wind-Leaves-Echo-Guqin/memory-ecology-compat)
+  is the multi-host derivative (dsh adapters, retrieval consumer, experience notebook, local GUI).
+  The two lines are version-aligned — both at **v3.1.0**; this tree's core is periodically mirrored
+  from compat's production tree.
 
 ## What is different
 
@@ -55,6 +69,32 @@ Every gate is an **independent script** outside the protected core, every action
 reversible** (git snapshot of the whole memory tree daily), and physical deletion is **disabled at
 the code level**.
 
+## Quick start
+
+```bash
+git clone https://github.com/Wind-Leaves-Echo-Guqin/memory-ecology.git
+cd memory-ecology
+
+# 1) clean-room test suite — mock LLM, zero dependencies, runs anywhere
+python -m unittest discover tests
+
+# 2) poke a gate (read-only search over the memory store)
+cd src/memory_ecology
+python eco_search.py --help
+
+# 3) read the methodology before wiring anything
+#    docs/philosophy.md → docs/architecture.md
+```
+
+Notes:
+
+- The data root defaults to the install location; set `MEMORY_ECOLOGY_ROOT` for multi-instance or
+  custom layouts. Thresholds come with conservative defaults — see `config.example.yaml`.
+- Gates ① and ③ call an LLM (DeepSeek-compatible endpoint; key from `MEMORY_ECOLOGY_API_KEY` or
+  `.env` in the data root, base URL configurable). Everything else is pure rules and runs offline.
+- Host-specific wiring (session-history extraction, injection hooks) is the **integration layer** —
+  see the compat repo's `integrations/` for reference adapters.
+
 ## Design principles (summary)
 
 1. Evolution is the goal; management is the means.
@@ -67,7 +107,7 @@ the code level**.
 
 Full details: [`docs/philosophy.md`](docs/philosophy.md)
 
-## Repository contents
+## Repository layout
 
 | Path | Content |
 |---|---|
@@ -75,13 +115,27 @@ Full details: [`docs/philosophy.md`](docs/philosophy.md)
 | [`docs/architecture.md`](docs/architecture.md) | The four gates, two-axis state machine, protected zones, evaluation |
 | [`docs/decisions.md`](docs/decisions.md) | Key design decisions — what was chosen, what was rejected, why |
 | [`docs/lessons.md`](docs/lessons.md) | Field lessons from running this in production for a single user |
+| `src/memory_ecology/` | The 9 governance scripts (gates, search, health check, eval, state) + shared `lib/` (config / fs / gatekit / llm / memstore / metrics / pii / similarity / cli_base / safeio / inject_gate) |
+| [`tests/test_cleanroom.py`](tests/test_cleanroom.py) | Zero-dependency clean-room suite (mock LLM, fixture isolation) |
+| [`config.example.yaml`](config.example.yaml) | Configuration template with conservative defaults |
+| [`CHANGELOG.md`](CHANGELOG.md) | Version history |
 
-## Roadmap
+## Two repositories, one lineage
 
-- [x] **Phase 1 — Methodology (this repository)**: design philosophy, architecture, decisions, and lessons as open documentation.
-- [x] **Phase 2 — Full implementation open-sourced (2026-09-01)**: the complete runnable implementation is now in this repository — `src/memory_ecology/` (9 governance scripts + `lib/` common modules: config / fs / llm / safeio), a zero-dependency clean-room test suite (`tests/`, mock LLM, runs anywhere), `config.example.yaml`, and a publishing pipeline that generates the open-source tree from the production codebase (personal identifiers stripped in the private pipeline — the sanitizer itself is not shipped, since its blocklist would enumerate private identifiers). The two Hermes-integration scripts (`eco_extract`, `eco_health_alert`) intentionally remain out of the open repo — they read Hermes runtime structures and are documented as the integration layer. **Install-and-run is the acceptance bar**: `git clone → python -m unittest discover tests → green`.
-- [x] **v2.1.0 (2026-09-03)**: core governance layer verified stable (zero functional drift); Hermes-integration evolution (experience notebook, error-context injection, historical backfill) tracked in `CHANGELOG.md` — this tree remains the governance-layer baseline. Versioning policy: open tree = core layer; integration layer stays local by design.
-- [x] **v2.2.0 (2026-09-06)**: safe write-path hardening — `lib/safeio.py` (entry-name whitelist + traversal guard, frontmatter schema validation, atomic writes with backups) wired into all entry writers; evaluation gate lines **INJ** (injection over-budget ≤5/30d) and **GOLD** (pseudo-gold top-5 relevance ≥60%, SKIP on pure-memory installs) added to `eco_eval` with a `--gate` rule-only mode; `scripts/scan_sensitive.py` removed (meta-leak — see CHANGELOG).
+| | This repo (`memory-ecology`) | [`memory-ecology-compat`](https://github.com/Wind-Leaves-Echo-Guqin/memory-ecology-compat) |
+|---|---|---|
+| Role | Core governance layer — methodology + the four gates' reference implementation | Multi-host derivative — portable core + host adapters |
+| Extra surface | — | Retrieval consumer (`memory_query`), experience notebook, backup, local GUI, dsh / Hermes adapters |
+| Versioning | Aligned with compat since v2.1.2 (currently **v3.1.0**) | Production tree; this repo's core mirrors it |
+
+## Milestones
+
+- **2026-08 · Methodology** — philosophy, architecture, decisions, lessons published as open docs.
+- **2026-09-01 · v2.0.0** — full implementation open-sourced; install-and-run acceptance bar (`clone → tests → green`).
+- **2026-09-06 · v2.2.0** — safe write-path hardening (`lib/safeio.py`) + evaluation gate lines (INJ / GOLD).
+- **2026-10-25 · v3.1.0** — core synced with the compat production tree: entry discipline (`lib/cli_base.py`), concurrency & Windows atomic-write hardening, PII redaction (`lib/pii.py`), similarity single-source, version single-source.
+
+Full history: [`CHANGELOG.md`](CHANGELOG.md)
 
 ## Acknowledgments & references
 
