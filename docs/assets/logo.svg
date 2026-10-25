@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" role="img" aria-label="Memory Ecology logo — four lifecycle gates in a cycle around a leaf">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a1f14"/>
+      <stop offset="1" stop-color="#123524"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7ee2a8"/>
+      <stop offset="1" stop-color="#2ea043"/>
+    </linearGradient>
+    <marker id="ah" viewBox="0 0 10 10" refX="7.5" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#a3b8ab"/>
+    </marker>
+  </defs>
+
+  <rect width="240" height="240" rx="46" fill="url(#bg)"/>
+  <rect x="7" y="7" width="226" height="226" rx="40" fill="none" stroke="#238636" stroke-width="2.5" opacity="0.8"/>
+
+  <!-- orbit -->
+  <circle cx="120" cy="120" r="66" fill="none" stroke="#3fb950" stroke-width="2" stroke-dasharray="2 9" opacity="0.5"/>
+
+  <!-- clockwise arcs between the four gates -->
+  <g fill="none" stroke="#a3b8ab" stroke-width="2.5" opacity="0.85">
+    <path d="M 153 63 A 66 66 0 0 1 177 87"  marker-end="url(#ah)"/>
+    <path d="M 177 153 A 66 66 0 0 1 153 177" marker-end="url(#ah)"/>
+    <path d="M 87 177 A 66 66 0 0 1 63 153"  marker-end="url(#ah)"/>
+    <path d="M 63 87 A 66 66 0 0 1 87 63"    marker-end="url(#ah)"/>
+  </g>
+
+  <!-- four gates -->
+  <g stroke-width="3">
+    <circle cx="120" cy="54"  r="15" fill="#3fb950" stroke="#173626"/>
+    <circle cx="186" cy="120" r="15" fill="#58a6ff" stroke="#152238"/>
+    <circle cx="120" cy="186" r="15" fill="#bc8cff" stroke="#241a38"/>
+    <circle cx="54"  cy="120" r="15" fill="#d29922" stroke="#382a12"/>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700" text-anchor="middle" fill="#0a1f14">
+    <text x="120" y="59.5">1</text>
+    <text x="186" y="125.5">2</text>
+    <text x="120" y="191.5">3</text>
+    <text x="54"  y="125.5">4</text>
+  </g>
+
+  <!-- center leaf: memory as a living thing -->
+  <path d="M120 90 C 146 105 146 139 120 154 C 94 139 94 105 120 90 Z" fill="url(#leaf)" opacity="0.95"/>
+  <path d="M120 98 V 146" stroke="#0a1f14" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
+  <path d="M120 112 C 112 116 108 122 107 128 M120 124 C 113 128 110 133 109 138 M120 112 C 128 116 132 122 133 128 M120 124 C 127 128 130 133 131 138"
+        fill="none" stroke="#0a1f14" stroke-width="2" stroke-linecap="round" opacity="0.45"/>
+</svg>
