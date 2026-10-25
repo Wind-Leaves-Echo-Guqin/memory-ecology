@@ -4,10 +4,6 @@
       <stop offset="0" stop-color="#0a1f14"/>
       <stop offset="1" stop-color="#123524"/>
     </linearGradient>
-    <linearGradient id="leaf" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#7ee2a8"/>
-      <stop offset="1" stop-color="#2ea043"/>
-    </linearGradient>
     <marker id="ah" viewBox="0 0 10 10" refX="7.5" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 Z" fill="#a3b8ab"/>
     </marker>
@@ -41,9 +37,9 @@
     <text x="54"  y="125.5">4</text>
   </g>
 
-  <!-- center leaf: memory as a living thing -->
-  <path d="M120 90 C 146 105 146 139 120 154 C 94 139 94 105 120 90 Z" fill="url(#leaf)" opacity="0.95"/>
-  <path d="M120 98 V 146" stroke="#0a1f14" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
+  <!-- center leaf: memory as a living thing (solid fill — renders identically everywhere) -->
+  <path d="M120 90 C 146 105 146 139 120 154 C 94 139 94 105 120 90 Z" fill="#56d364" stroke="#7ee2a8" stroke-width="2"/>
+  <path d="M120 98 V 146" stroke="#0a1f14" stroke-width="3" stroke-linecap="round" opacity="0.55"/>
   <path d="M120 112 C 112 116 108 122 107 128 M120 124 C 113 128 110 133 109 138 M120 112 C 128 116 132 122 133 128 M120 124 C 127 128 130 133 131 138"
         fill="none" stroke="#0a1f14" stroke-width="2" stroke-linecap="round" opacity="0.45"/>
 </svg>
